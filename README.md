@@ -51,9 +51,11 @@ GoldTradingSystem/
 
 1. 复制整个项目文件夹到任意本地磁盘。
 2. 双击 `Start/安装到新电脑.bat`。
-3. 安装器检测并选择 MT5、生成本机路径配置、部署 Guardian、尝试 MetaEditor 编译、建立项目 Python 环境并运行基础检查。
-4. 按 `Docs/MANUAL_SETUP.md` 完成 ATAS SDK / Rithmic Paper / MT5 Socket / DeepSeek 本机配置。
-5. 双击 `Start/启动系统.bat`。
+3. 安装器检测并选择 MT5、生成本机路径配置、部署 Guardian，并在找到 MetaEditor 时尝试真实编译。
+4. 安装器检测到 ATAS 后，会自动尝试使用本机 `ATAS.Indicators.dll` / `ATAS.DataFeedsCore.dll` 编译并部署 SDK Bridge；失败时只记录/提示，不部署未验证 DLL。
+5. Portable 包已经包含项目内嵌 Python；Dev 包在没有项目 Python 时由安装器准备运行环境。
+6. 按 `Docs/MANUAL_SETUP.md` 完成 MT5 Socket、ATAS 图表加载、Rithmic Paper、DeepSeek 和模拟盘验收。
+7. 双击 `Start/启动系统.bat`。
 
 ## Dashboard 控制
 
@@ -73,11 +75,12 @@ Dashboard 仅绑定 `127.0.0.1`，提供：
 - `GoldTradingSystem_Dev_<version>.zip`
 - `GoldTradingSystem_Portable_<version>.zip`
 
-Portable 包不包含真实 Key、数据库、日志、账户数据或用户绝对路径；Python 使用自动安装器准备。GitHub 的 `Build delivery packages` workflow 也可以生成对应 artifact。
+Portable 包不包含真实 Key、数据库、日志、账户数据或用户绝对路径，并包含项目内嵌 Python。Windows CI 会实际解包 Portable 并验证关键 Python imports，而不是只检查 ZIP 是否生成。GitHub 的 `Build delivery packages` workflow 会产出可下载 artifact。
 
 ## 验收
 
 - `Docs/ACCEPTANCE.md`：30 项 V1 验收矩阵。
 - `Docs/MANUAL_SETUP.md`：只剩必须由真实平台完成的步骤。
+- `Start/本机验收.bat`：只读预检，不发送订单；生成脱敏 `Runtime/acceptance-report.json`。
 
 开发规格：`黄金日内 AI 交易系统 V1.0 完整总需求`。
