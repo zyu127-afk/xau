@@ -112,6 +112,50 @@ class Runtime:
         slot["current_price"] = self.guardian.state.bid if slot.get("side") == "BUY" else self.guardian.state.ask
         return slot
 
+    @staticmethod
+    def _zone_text(items: object) -> str:
+        if not isinstance(items, list) or not items:
+            return "-"
+        item = items[0]
+        if not isinstance(item, dict):
+            return "-"
+        zone = item.get("zone") if isinstance(item.get("zone"), dict) else item
+        try:
+            return f"{float(zone['low']):.2f}-{float(zone['high']):.2f}"
+        except (KeyError, TypeError, ValueError):
+            return "-"
+
+    @staticmethod
+    def _potential_text(items: object, side: str) -> str:
+        if not isinstance(items, list):
+            return "-"
+        for item in items:
+            if not isinstance(item, dict) or str(item.get("side", "")).upper() != side:
+                continue
+            zone = item.get("zone") if isinstance(item.get("zone"), dict) else {}
+            try:
+                return f"{float(zone['low']):.2f}-{float(zone['high']):.2f} {item.get('status','')}"
+            except (KeyError, TypeError, ValueError):
+                return "-"
+        return "-"
+
+    async def _publish_mt5_hud(self, degradation_name: str) -> None:
+        d = self.dashboard.state
+        system = d.get("system", {}) if isinstance(d.get("system"), dict) else {}
+        fields = [
+            d.get("regime", "UNKNOWN"),
+            d.get("bias", "NEUTRAL"),
+            self._zone_text(d.get("supports")),
+            self._zone_text(d.get("resistances")),
+            self._potential_text(d.get("zones"), "BUY"),
+            self._potential_text(d.get("zones"), "SELL"),
+            d.get("orderflow_assessment", "数据不足"),
+            system.get("ai", self.ai_status),
+            "-" if self.ai_latency_ms is None else f"{self.ai_latency_ms:.0f}ms",
+            degradation_name,
+        ]
+        await self.guardian.publish_status(fields)
+
     async def status_loop(self) -> None:
         while True:
             assessment = self.orderflow.assess()
@@ -152,6 +196,7 @@ class Runtime:
                 "orderflow_assessment": assessment.label,
                 "positions": {"A": self._slot_dashboard("A"), "B": self._slot_dashboard("B")},
             })
+            await self._publish_mt5_hud(degradation.name)
             self.trade_recorder.sync(self.guardian.state)
             now_mono = time.monotonic()
             if self.guardian.heartbeat_fresh() and now_mono - self._last_slot_persist >= 10.0:
@@ -178,7 +223,6 @@ class Runtime:
                             continue
                         price = float(self.guardian.state.bid if slot.side.upper() == "BUY" else self.guardian.state.ask)
                         decision = self.position_manager.evaluate(slot, price)
-                        # Strong opposing order flow may accelerate an exit once the trade has positive excursion.
                         if decision.action == "HOLD" and slot.mfe > 0:
                             if slot.side.upper() == "BUY" and assessment.score <= -1.5:
                                 decision.action, decision.reason = "CLOSE", "strong opposing order flow"
