@@ -3,6 +3,23 @@
   "title": "GoldTradingSystem AI Analysis",
   "type": "object",
   "required": ["market_regime","bias","confidence","key_support","key_resistance","long_zones","short_zones","entry_plan_long","entry_plan_short","invalidation","orderflow_assessment","position_management","no_trade_conditions","validity","reasoning_summary"],
+  "$defs": {
+    "entryPlan": {
+      "type": "object",
+      "required": ["action","zone_low","zone_high","stop_loss","take_profit","valid_for_seconds","reason","confirmations"],
+      "properties": {
+        "action": {"enum": ["OPEN","WAIT","NO_TRADE"]},
+        "zone_low": {"type": ["number","null"]},
+        "zone_high": {"type": ["number","null"]},
+        "stop_loss": {"type": ["number","null"]},
+        "take_profit": {"type": ["number","null"]},
+        "lot": {"type": ["number","null"]},
+        "valid_for_seconds": {"type": "integer", "minimum": 1, "maximum": 120},
+        "reason": {"type": "string"},
+        "confirmations": {"type": "array", "items": {"type": "string"}}
+      }
+    }
+  },
   "properties": {
     "market_regime": {"enum": ["EXTREME_TREND","TREND","RANGE","TRANSITION"]},
     "bias": {"enum": ["LONG","SHORT","NEUTRAL"]},
@@ -11,13 +28,13 @@
     "key_resistance": {"type": "array"},
     "long_zones": {"type": "array"},
     "short_zones": {"type": "array"},
-    "entry_plan_long": {"type": "object"},
-    "entry_plan_short": {"type": "object"},
+    "entry_plan_long": {"$ref": "#/$defs/entryPlan"},
+    "entry_plan_short": {"$ref": "#/$defs/entryPlan"},
     "invalidation": {"type": ["object","array","string"]},
     "orderflow_assessment": {"type": ["object","string"]},
     "position_management": {"type": ["object","array","string"]},
     "no_trade_conditions": {"type": "array"},
-    "validity": {"type": ["object","string"]},
+    "validity": {"type": "object", "properties": {"max_price_move": {"type": "number", "minimum": 0}, "expires_in_seconds": {"type": "integer", "minimum": 1, "maximum": 120}}},
     "reasoning_summary": {"type": "string"}
   },
   "additionalProperties": true

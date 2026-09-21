@@ -1,0 +1,173 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+from .ai_client import OpenAICompatibleClient
+from .guardian_protocol import GuardianCommand
+from .models import Bias, MarketRegime, TradeIntent
+from .snapshot_builder import build_snapshot, fingerprint_positions
+from .stale import validate_intent
+from .structure import classify_market
+from .trade_planner import actual_space_is_worthwhile, build_plans
+from .zones import build_zones, PriceZone
+
+
+class AnalysisEngine:
+    def __init__(self, runtime: Any) -> None:
+        self.runtime = runtime
+        self.settings = runtime.settings
+        self.db = runtime.db
+        self.log = logging.getLogger("trading")
+        ai_cfg = self.settings.raw.get("ai", {})
+        self.ai = OpenAICompatibleClient(ai_cfg, self.settings.api_key)
+        prompt_path = self.settings.paths.root / "AI" / "system_prompt.md"
+        self.system_prompt = prompt_path.read_text(encoding="utf-8") if prompt_path.exists() else ""
+        self.last_ai_at: datetime | None = None
+        self.ai_interval = float(ai_cfg.get("minimum_interval_seconds", 15))
+        self.min_ai_confidence = float(ai_cfg.get("min_confidence", 0.60))
+
+    @staticmethod
+    def _zone_dict(z: PriceZone) -> dict:
+        return asdict(z)
+
+    def _ai_plan_to_intent(self, snapshot, payload: dict, side: str) -> TradeIntent | None:
+        key = "entry_plan_long" if side == "BUY" else "entry_plan_short"
+        plan = payload.get(key)
+        if not isinstance(plan, dict) or str(plan.get("action", "WAIT")).upper() != "OPEN":
+            return None
+        try:
+            valid_seconds = max(1, min(120, int(plan.get("valid_for_seconds", 20))))
+            return TradeIntent(
+                intent_id=f"{snapshot.snapshot_id}-{side}", action="OPEN", side=side,
+                lot=float(plan.get("lot", self.settings.default_lot)), snapshot_id=snapshot.snapshot_id,
+                reason=str(plan.get("reason", payload.get("reasoning_summary", "AI plan"))),
+                valid_until=datetime.now(timezone.utc) + timedelta(seconds=valid_seconds),
+                zone_low=float(plan["zone_low"]), zone_high=float(plan["zone_high"]),
+                stop_loss=float(plan["stop_loss"]),
+                take_profit=None if plan.get("take_profit") in (None, "") else float(plan["take_profit"]),
+                metadata={"confidence": payload.get("confidence", 0), "mode": payload.get("market_regime")},
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    async def run_once(self) -> None:
+        if not self.runtime.guardian.heartbeat_fresh() or not self.runtime.guardian.state.symbol:
+            return
+        symbol = self.runtime.guardian.state.symbol
+        provider = self.runtime.mt5_data
+        if provider is None or not provider.connected:
+            return
+        names = ("D1", "H4", "H1", "M30", "M15", "M5", "M1")
+        bars_by_tf = {tf: await asyncio.to_thread(provider.bars, symbol, tf, 300) for tf in names}
+        if any(len(bars_by_tf[tf]) < 30 for tf in ("H1", "M15", "M5", "M1")):
+            return
+        tick = await asyncio.to_thread(provider.tick, symbol)
+        if not tick:
+            return
+        bid, ask = float(tick["bid"]), float(tick["ask"])
+        mid = (bid + ask) / 2.0
+        structure = classify_market(bars_by_tf)
+        zones: list[PriceZone] = []
+        for tf in ("H4", "H1", "M30", "M15"):
+            zones.extend(build_zones(tf, bars_by_tf[tf], max_each=3))
+        orderflow = self.runtime.orderflow.assess()
+        long_plan, short_plan = build_plans(mid, structure, zones, orderflow)
+        positions = await asyncio.to_thread(provider.positions, symbol)
+        gc_price = None
+        if self.runtime.atas.state.latest:
+            payload0 = self.runtime.atas.state.latest.get("payload") or {}
+            raw_gc = payload0.get("last", payload0.get("price"))
+            if raw_gc is not None:
+                gc_price = float(raw_gc)
+        dynamic = {
+            "mt5": {"symbol": symbol, "bid": bid, "ask": ask, "mid": mid, "positions": positions},
+            "structure": {"regime": structure.regime.value, "bias": structure.bias.value,
+                          "state_id": structure.state_id, "reasons": structure.reasons,
+                          "timeframes": {k: asdict(v) for k, v in structure.structures.items()}},
+            "zones": [self._zone_dict(z) for z in zones],
+            "orderflow": {"label": orderflow.label, "score": orderflow.score, "evidence": orderflow.evidence, "raw": orderflow.raw},
+            "local_plans": {"long": asdict(long_plan), "short": asdict(short_plan)},
+            "price_mapping": asdict(self.runtime.alignment.estimate()) if self.runtime.alignment.estimate() else None,
+            "atas": {"health": self.runtime.atas.state.health.value, "instrument": self.runtime.atas.state.instrument,
+                     "mbo_available": self.runtime.atas.state.mbo_available, "gc_price": gc_price},
+        }
+        snapshot = build_snapshot(mid, gc_price, structure.state_id, positions, orderflow.label, dynamic)
+        self.db.execute("INSERT OR REPLACE INTO MarketSnapshots(id,ts,payload) VALUES(?,?,?)",
+                        (snapshot.snapshot_id, snapshot.snapshot_time.isoformat(), json.dumps(dynamic, ensure_ascii=False, default=str)))
+        why = []
+        if structure.regime is MarketRegime.TRANSITION: why.append("市场处于转换状态")
+        if self.runtime.atas.state.health.value != "HEALTHY": why.append("ATAS订单流不是HEALTHY")
+        if not self.runtime.alignment.estimate(): why.append("GC↔MT5映射仍在预热")
+        await self.runtime.dashboard.push({
+            "regime": structure.regime.value, "bias": structure.bias.value,
+            "supports": [self._zone_dict(z) for z in zones if z.kind == "SUPPORT"][:3],
+            "resistances": [self._zone_dict(z) for z in zones if z.kind == "RESISTANCE"][:3],
+            "zones": [self._zone_dict(z) for z in zones[:6]],
+            "long_plan": asdict(long_plan), "short_plan": asdict(short_plan),
+            "why_no_trade": why or ["等待AI/执行确认"],
+        })
+        if not self.settings.api_key or not self.system_prompt:
+            return
+        now = datetime.now(timezone.utc)
+        if self.last_ai_at and (now - self.last_ai_at).total_seconds() < self.ai_interval:
+            return
+        self.last_ai_at = now
+        result = await self.ai.analyze(self.system_prompt, {"snapshot_id": snapshot.snapshot_id, **dynamic})
+        self.db.execute("INSERT INTO AIAnalysis(ts,snapshot_id,status,payload) VALUES(?,?,?,?)",
+                        (datetime.now(timezone.utc).isoformat(), snapshot.snapshot_id, result.status,
+                         json.dumps({"payload": result.payload, "error": result.error, "latency_ms": result.latency_ms}, ensure_ascii=False)))
+        if not result.payload or result.status not in {"HEALTHY", "SLOW"}:
+            return
+        if float(result.payload.get("confidence", 0.0)) < self.min_ai_confidence:
+            self.db.execute("INSERT INTO NoTradeEvents(ts,reason,payload) VALUES(?,?,?)",
+                            (datetime.now(timezone.utc).isoformat(), "AI confidence below local threshold", json.dumps(result.payload, ensure_ascii=False)))
+            return
+        # Re-read live state after the asynchronous AI request before converting any plan to an executable command.
+        tick2 = await asyncio.to_thread(provider.tick, symbol)
+        positions2 = await asyncio.to_thread(provider.positions, symbol)
+        if not tick2:
+            return
+        mid2 = (float(tick2["bid"]) + float(tick2["ask"])) / 2.0
+        current = build_snapshot(mid2, gc_price, structure.state_id, positions2, self.runtime.orderflow.assess().label, dynamic)
+        current.snapshot_id = snapshot.snapshot_id
+        for side in ("BUY", "SELL"):
+            intent = self._ai_plan_to_intent(snapshot, result.payload, side)
+            if intent is None:
+                continue
+            max_move = float((result.payload.get("validity") or {}).get("max_price_move", max(1.0, abs(ask-bid)*10))) if isinstance(result.payload.get("validity"), dict) else max(1.0, abs(ask-bid)*10)
+            ok, stale_reason = validate_intent(intent, snapshot, current, max_move)
+            if not ok:
+                self.db.execute("INSERT INTO NoTradeEvents(ts,reason,payload) VALUES(?,?,?)", (datetime.now(timezone.utc).isoformat(), stale_reason, "{}"))
+                continue
+            if structure.regime in {MarketRegime.TREND, MarketRegime.EXTREME_TREND}:
+                if side == "BUY" and structure.bias is not Bias.LONG: continue
+                if side == "SELL" and structure.bias is not Bias.SHORT: continue
+            if side == "BUY" and orderflow.score < 0.45: continue
+            if side == "SELL" and orderflow.score > -0.45: continue
+            est_sl = abs(mid2 - intent.stop_loss)
+            worthwhile, reason = actual_space_is_worthwhile(mid2, side, zones, abs(float(tick2["ask"])-float(tick2["bid"])), est_sl)
+            if not worthwhile:
+                self.db.execute("INSERT INTO NoTradeEvents(ts,reason,payload) VALUES(?,?,?)", (datetime.now(timezone.utc).isoformat(), reason, "{}"))
+                continue
+            slot = "A" if not self.runtime.logical_slot_active("A") else "B"
+            command = GuardianCommand(intent.intent_id, "OPEN", slot, side, intent.lot, intent.stop_loss, intent.take_profit,
+                                      intent.zone_low, intent.zone_high, intent.valid_until, intent.reason)
+            accepted, guardian_reason = await self.runtime.guardian.submit(command)
+            self.db.execute("INSERT INTO SystemEvents(ts,level,component,event,payload) VALUES(?,?,?,?,?)",
+                            (datetime.now(timezone.utc).isoformat(), "INFO" if accepted else "WARNING", "Guardian", "OPEN_ACK",
+                             json.dumps({"accepted": accepted, "reason": guardian_reason, "slot": slot, "side": side}, ensure_ascii=False)))
+            break
+
+    async def loop(self) -> None:
+        while True:
+            try:
+                await self.run_once()
+            except Exception:
+                logging.getLogger("errors").exception("analysis loop failed")
+            await asyncio.sleep(1.0)
