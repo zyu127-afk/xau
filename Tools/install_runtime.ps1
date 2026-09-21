@@ -18,7 +18,7 @@ if((Test-Path $embedded) -and -not $Force){
   if(Test-GtsPython $embedded){
     Write-Host "[Runtime] 使用已内置 Portable Python: $embedded"
     Write-Host $embedded
-    exit 0
+    return
   }
   throw '检测到 Runtime\python\python.exe，但依赖自检失败。请重新构建 Portable runtime 或使用 -Force。'
 }
