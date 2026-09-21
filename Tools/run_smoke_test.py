@@ -13,6 +13,10 @@ from Engine.goldtrading.structure import Bar, classify_market
 from Engine.goldtrading.zones import build_zones
 
 
+def ascii_text(value: object) -> str:
+    return ascii(value)
+
+
 def main():
     mapping = PriceAlignmentEngine(min_samples=30)
     for i in range(60):
@@ -35,10 +39,10 @@ def main():
         flow.ingest({"type": "trade", "payload": {"volume": 5, "aggressor_side": "BUY"}})
     zones = build_zones("H1", bars)
 
-    print("mapping", estimate)
+    print("mapping", ascii_text(estimate))
     print("state", state.regime.value, state.bias.value, state.state_id)
-    print("orderflow", flow.assess())
-    print("zones", zones[:6])
+    print("orderflow", ascii_text(flow.assess()))
+    print("zones", ascii_text(zones[:6]))
     print("SMOKE TEST OK")
 
 
