@@ -26,6 +26,7 @@ class GuardianConnectionState:
     slot_a_side: str = ""
     slot_a_lot: float = 0.0
     slot_a_entry_price: float = 0.0
+    slot_a_original_sl: float = 0.0
     slot_a_sl: float = 0.0
     slot_a_tp: float = 0.0
     slot_a_entry_time: int = 0
@@ -35,6 +36,7 @@ class GuardianConnectionState:
     slot_b_side: str = ""
     slot_b_lot: float = 0.0
     slot_b_entry_price: float = 0.0
+    slot_b_original_sl: float = 0.0
     slot_b_sl: float = 0.0
     slot_b_tp: float = 0.0
     slot_b_entry_time: int = 0
@@ -80,8 +82,26 @@ class GuardianServer:
             await self._server.wait_closed()
         self.state.connected = False
 
-    def _parse_slot(self, parts: list[str], start: int, prefix: str) -> None:
-        # active, side, lot, entry, sl, tp, entry_time, mfe, mae
+    def _parse_slot_v20(self, parts: list[str], start: int, prefix: str) -> None:
+        # active, side, lot, entry, original_sl, current_sl, tp, entry_time, mfe, mae
+        if len(parts) < start + 10:
+            return
+        try:
+            setattr(self.state, prefix + "active", parts[start] == "1")
+            setattr(self.state, prefix + "side", parts[start + 1])
+            setattr(self.state, prefix + "lot", float(parts[start + 2] or 0))
+            setattr(self.state, prefix + "entry_price", float(parts[start + 3] or 0))
+            setattr(self.state, prefix + "original_sl", float(parts[start + 4] or 0))
+            setattr(self.state, prefix + "sl", float(parts[start + 5] or 0))
+            setattr(self.state, prefix + "tp", float(parts[start + 6] or 0))
+            setattr(self.state, prefix + "entry_time", int(float(parts[start + 7] or 0)))
+            setattr(self.state, prefix + "mfe", float(parts[start + 8] or 0))
+            setattr(self.state, prefix + "mae", float(parts[start + 9] or 0))
+        except (TypeError, ValueError):
+            return
+
+    def _parse_slot_legacy(self, parts: list[str], start: int, prefix: str) -> None:
+        # v0.20 pre-original-SL shape: active, side, lot, entry, sl, tp, entry_time, mfe, mae
         if len(parts) < start + 9:
             return
         try:
@@ -89,7 +109,9 @@ class GuardianServer:
             setattr(self.state, prefix + "side", parts[start + 1])
             setattr(self.state, prefix + "lot", float(parts[start + 2] or 0))
             setattr(self.state, prefix + "entry_price", float(parts[start + 3] or 0))
-            setattr(self.state, prefix + "sl", float(parts[start + 4] or 0))
+            sl = float(parts[start + 4] or 0)
+            setattr(self.state, prefix + "original_sl", sl)
+            setattr(self.state, prefix + "sl", sl)
             setattr(self.state, prefix + "tp", float(parts[start + 5] or 0))
             setattr(self.state, prefix + "entry_time", int(float(parts[start + 6] or 0)))
             setattr(self.state, prefix + "mfe", float(parts[start + 7] or 0))
@@ -125,11 +147,13 @@ class GuardianServer:
                         self.state.positions = int(parts[5]); self.state.orders = int(parts[6]); self.state.weekend_protection = parts[7] == "1"
                     except (TypeError, ValueError):
                         continue
-                    # v0.20 full slot payload: base fields 0..7, A=8..16, B=17..25.
-                    if len(parts) >= 26:
-                        self._parse_slot(parts, 8, "slot_a_")
-                        self._parse_slot(parts, 17, "slot_b_")
-                    elif len(parts) >= 10:  # legacy heartbeat
+                    if len(parts) >= 28:  # current full slot payload
+                        self._parse_slot_v20(parts, 8, "slot_a_")
+                        self._parse_slot_v20(parts, 18, "slot_b_")
+                    elif len(parts) >= 26:  # early full-slot payload
+                        self._parse_slot_legacy(parts, 8, "slot_a_")
+                        self._parse_slot_legacy(parts, 17, "slot_b_")
+                    elif len(parts) >= 10:  # legacy active flags only
                         self.state.slot_a_active = parts[8] == "1"
                         self.state.slot_b_active = parts[9] == "1"
                 elif kind == "ACK" and len(parts) >= 4:
