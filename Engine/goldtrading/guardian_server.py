@@ -15,6 +15,7 @@ class GuardianConnectionState:
     account_mode: str = ""
     ea_version: str = ""
     last_heartbeat: float = 0.0
+    server_time: int = 0
     bid: float | None = None
     ask: float | None = None
     spread_points: float | None = None
@@ -22,7 +23,23 @@ class GuardianConnectionState:
     orders: int = 0
     weekend_protection: bool = False
     slot_a_active: bool = False
+    slot_a_side: str = ""
+    slot_a_lot: float = 0.0
+    slot_a_entry_price: float = 0.0
+    slot_a_sl: float = 0.0
+    slot_a_tp: float = 0.0
+    slot_a_entry_time: int = 0
+    slot_a_mfe: float = 0.0
+    slot_a_mae: float = 0.0
     slot_b_active: bool = False
+    slot_b_side: str = ""
+    slot_b_lot: float = 0.0
+    slot_b_entry_price: float = 0.0
+    slot_b_sl: float = 0.0
+    slot_b_tp: float = 0.0
+    slot_b_entry_time: int = 0
+    slot_b_mfe: float = 0.0
+    slot_b_mae: float = 0.0
 
 
 class GuardianServer:
@@ -63,6 +80,23 @@ class GuardianServer:
             await self._server.wait_closed()
         self.state.connected = False
 
+    def _parse_slot(self, parts: list[str], start: int, prefix: str) -> None:
+        # active, side, lot, entry, sl, tp, entry_time, mfe, mae
+        if len(parts) < start + 9:
+            return
+        try:
+            setattr(self.state, prefix + "active", parts[start] == "1")
+            setattr(self.state, prefix + "side", parts[start + 1])
+            setattr(self.state, prefix + "lot", float(parts[start + 2] or 0))
+            setattr(self.state, prefix + "entry_price", float(parts[start + 3] or 0))
+            setattr(self.state, prefix + "sl", float(parts[start + 4] or 0))
+            setattr(self.state, prefix + "tp", float(parts[start + 5] or 0))
+            setattr(self.state, prefix + "entry_time", int(float(parts[start + 6] or 0)))
+            setattr(self.state, prefix + "mfe", float(parts[start + 7] or 0))
+            setattr(self.state, prefix + "mae", float(parts[start + 8] or 0))
+        except (TypeError, ValueError):
+            return
+
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         peer = writer.get_extra_info("peername")
         if peer and peer[0] not in {"127.0.0.1", "::1"}:
@@ -84,10 +118,18 @@ class GuardianServer:
                 if kind == "HELLO" and len(parts) >= 5:
                     self.state.account, self.state.symbol, self.state.account_mode, self.state.ea_version = parts[1:5]
                 elif kind == "HB" and len(parts) >= 8:
-                    self.state.last_heartbeat = time.monotonic()
-                    self.state.bid = float(parts[2]); self.state.ask = float(parts[3]); self.state.spread_points = float(parts[4])
-                    self.state.positions = int(parts[5]); self.state.orders = int(parts[6]); self.state.weekend_protection = parts[7] == "1"
-                    if len(parts) >= 10:
+                    try:
+                        self.state.last_heartbeat = time.monotonic()
+                        self.state.server_time = int(float(parts[1]))
+                        self.state.bid = float(parts[2]); self.state.ask = float(parts[3]); self.state.spread_points = float(parts[4])
+                        self.state.positions = int(parts[5]); self.state.orders = int(parts[6]); self.state.weekend_protection = parts[7] == "1"
+                    except (TypeError, ValueError):
+                        continue
+                    # v0.20 full slot payload: base fields 0..7, A=8..16, B=17..25.
+                    if len(parts) >= 26:
+                        self._parse_slot(parts, 8, "slot_a_")
+                        self._parse_slot(parts, 17, "slot_b_")
+                    elif len(parts) >= 10:  # legacy heartbeat
                         self.state.slot_a_active = parts[8] == "1"
                         self.state.slot_b_active = parts[9] == "1"
                 elif kind == "ACK" and len(parts) >= 4:
@@ -100,6 +142,10 @@ class GuardianServer:
             if self._writer is writer:
                 self._writer = None
             self.state.connected = False
+            for fut in list(self._acks.values()):
+                if not fut.done():
+                    fut.set_result((False, "Guardian disconnected"))
+            self._acks.clear()
             writer.close()
             try:
                 await writer.wait_closed()
@@ -110,6 +156,8 @@ class GuardianServer:
         writer = self._writer
         if writer is None or writer.is_closing() or not self.state.connected:
             return False, "Guardian offline"
+        if command.command_id in self._acks:
+            return False, "duplicate command id already pending"
         loop = asyncio.get_running_loop()
         future: asyncio.Future[tuple[bool, str]] = loop.create_future()
         self._acks[command.command_id] = future
