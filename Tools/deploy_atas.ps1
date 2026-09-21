@@ -10,30 +10,25 @@ $logDir=Join-Path $root 'Logs'
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
 if([string]::IsNullOrWhiteSpace($AtasInstallPath)){
-  throw 'AtasInstallPath is required. Run Start/安装到新电脑.bat so the installed ATAS instance can be detected.'
+  throw 'AtasInstallPath is required. Run the new-computer installer so the installed ATAS instance can be detected.'
 }
 if(-not (Test-Path $AtasInstallPath)){ throw "ATAS path not found: $AtasInstallPath" }
 if(-not (Test-Path $project)){ throw "ATAS SDK binding project not found: $project" }
 
-# The user-facing install folder can contain a versioned subfolder. Resolve the folder
-# that actually owns ATAS.Indicators.dll instead of hard-coding a version path.
 $sdkDll=Join-Path $AtasInstallPath 'ATAS.Indicators.dll'
 if(-not (Test-Path $sdkDll)){
   $hit=Get-ChildItem -Path $AtasInstallPath -Filter 'ATAS.Indicators.dll' -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
   if($hit){ $sdkDll=$hit.FullName; $AtasInstallPath=$hit.Directory.FullName }
 }
 $dataFeeds=Join-Path $AtasInstallPath 'ATAS.DataFeedsCore.dll'
-if(-not (Test-Path $sdkDll)){ throw "ATAS.Indicators.dll not found under the selected ATAS installation." }
-if(-not (Test-Path $dataFeeds)){ throw "ATAS.DataFeedsCore.dll not found next to ATAS.Indicators.dll: $AtasInstallPath" }
+if(-not (Test-Path $sdkDll)){ throw 'ATAS.Indicators.dll was not found under the selected ATAS installation.' }
+if(-not (Test-Path $dataFeeds)){ throw "ATAS.DataFeedsCore.dll was not found next to ATAS.Indicators.dll: $AtasInstallPath" }
 
 $dotnet=Get-Command dotnet -ErrorAction SilentlyContinue
 if(-not $dotnet){
-  throw 'dotnet SDK was not found. Install the Microsoft .NET SDK that matches your ATAS runtime (8 or 10), then rerun this script.'
+  throw 'dotnet SDK was not found. Install the Microsoft .NET SDK matching the ATAS runtime (8 or 10), then rerun this script.'
 }
 
-# Official ATAS documentation states current builds can use .NET 8 or .NET 10.
-# Inspect the assembly metadata text when possible; otherwise try both targets and
-# accept only a target that actually compiles against the locally installed SDK.
 $bytes=[IO.File]::ReadAllBytes($sdkDll)
 $meta=[Text.Encoding]::UTF8.GetString($bytes)
 $targets=@()
@@ -54,15 +49,14 @@ foreach($tfm in $targets){
   }
 }
 if(-not $built){
-  throw "ATAS SDK bridge did not compile against the installed SDK. Inspect Logs/atas_sdk_build_*.log. No unverified DLL was deployed."
+  throw 'ATAS SDK bridge did not compile against the installed SDK. Inspect Logs/atas_sdk_build_*.log. No unverified DLL was deployed.'
 }
 
 $core=Join-Path $root "ATAS\GoldTradingDataBridge.ATAS\bin\Release\$selectedTfm\GoldTradingDataBridge.dll"
 if(-not (Test-Path $core)){
-  # Project-reference output can also remain under the core project's target directory.
   $core=Join-Path $root 'ATAS\GoldTradingDataBridge\bin\Release\net8.0\GoldTradingDataBridge.dll'
 }
-if(-not (Test-Path $core)){ throw 'GoldTradingDataBridge core DLL missing after successful SDK build.' }
+if(-not (Test-Path $core)){ throw 'GoldTradingDataBridge core DLL is missing after successful SDK build.' }
 
 if([string]::IsNullOrWhiteSpace($TargetPath)){
   $TargetPath=Join-Path $env:APPDATA 'ATAS\Indicators'
