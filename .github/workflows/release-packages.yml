@@ -11,6 +11,8 @@ on:
       - 'Tools/build_release.ps1'
       - 'Tools/install_runtime.ps1'
       - 'Tools/install.ps1'
+      - 'Tools/start_system.ps1'
+      - 'Tools/stop_system.ps1'
       - 'Start/**'
       - 'Engine/requirements*.txt'
       - 'UI/requirements.txt'
@@ -21,6 +23,18 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Parse Windows PowerShell scripts
+        shell: pwsh
+        run: |
+          foreach($script in Get-ChildItem Tools -Filter '*.ps1' -File){
+            $tokens=$null
+            $errors=$null
+            [System.Management.Automation.Language.Parser]::ParseFile($script.FullName,[ref]$tokens,[ref]$errors) | Out-Null
+            if($errors.Count -gt 0){
+              $errors | ForEach-Object { Write-Error "$($script.Name): $($_.Message)" }
+              throw "PowerShell syntax validation failed: $($script.Name)"
+            }
+          }
       - name: Resolve version
         id: version
         shell: pwsh
@@ -56,7 +70,7 @@ jobs:
             foreach($rel in @(
               '.env','Config\secrets.local','Config\config.yaml','Config\paths.yaml',
               'Runtime\dashboard.token','Runtime\control.json','Runtime\acceptance-report.json',
-              'Runtime\atas-binding.json','Runtime\mt5-binding.json','Runtime\diagnostics'
+              'Runtime\atas-binding.json','Runtime\mt5-binding.json','Runtime\processes.json','Runtime\diagnostics'
             )){
               if(Test-Path (Join-Path $dest $rel)){ throw "$($zip.Name): sensitive local state leaked: $rel" }
             }
