@@ -29,3 +29,4 @@ def test_smoke_test_runs_when_cwd_is_outside_repo(tmp_path: Path):
     result = _run_tool(ROOT / "Tools" / "run_smoke_test.py", tmp_path)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "SMOKE TEST OK" in result.stdout
+    result.stdout.encode("ascii")
