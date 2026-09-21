@@ -17,6 +17,13 @@ trading:
   max_spread_points: 80
   require_server_sl: true
 
+position_management:
+  break_even_r: 1.0
+  lock_r: 1.5
+  lock_fraction_r: 0.5
+  giveback_trigger_r: 2.0
+  max_giveback_fraction: 0.55
+
 mt5:
   transport: localhost
   host: 127.0.0.1
@@ -35,6 +42,8 @@ price_mapping:
   rolling_window: 300
   min_samples: 30
   min_correlation: 0.80
+  max_residual: 2.50
+  stale_seconds: 5
 
 ai:
   provider: openai_compatible
