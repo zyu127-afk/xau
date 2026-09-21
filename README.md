@@ -43,3 +43,5 @@ GoldTradingSystem/
 ```
 
 开发规格：GoldTradingSystem V1.0 完整总需求。
+
+本仓库内能自动化实现与测试的部分会直接实现；必须依赖本机 MT5 / ATAS / Rithmic / 经纪商环境的步骤集中记录在 `Docs/MANUAL_STEPS.md`。
