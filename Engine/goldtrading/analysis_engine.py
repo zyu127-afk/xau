@@ -130,6 +130,8 @@ class AnalysisEngine:
         breakout = assess_breakout(bars_by_tf["M5"], zones)
         orderflow = self.runtime.orderflow.assess()
         orderflow_fp = self._orderflow_fingerprint()
+        important_events = self.runtime.orderflow.important_events(20)
+        event_outcomes = self.runtime.event_outcomes.recent(20)
         modes = assess_modes(structure, potentials, breakout, orderflow)
         long_plan, short_plan = build_plans(mid, structure, zones, orderflow)
         positions = await asyncio.to_thread(provider.positions, symbol)
@@ -146,8 +148,12 @@ class AnalysisEngine:
             "potential_zones": [asdict(x) for x in potentials],
             "breakout": asdict(breakout),
             "trade_modes": [asdict(x) for x in modes],
-            "orderflow": {"label": orderflow.label, "score": orderflow.score, "evidence": orderflow.evidence, "raw": orderflow.raw,
-                          "freshness_fingerprint": orderflow_fp},
+            "orderflow": {
+                "label": orderflow.label, "score": orderflow.score, "evidence": orderflow.evidence,
+                "raw": orderflow.raw, "freshness_fingerprint": orderflow_fp,
+                "recent_important_events": important_events,
+                "recent_event_outcomes": event_outcomes,
+            },
             "local_plans": {"long": asdict(long_plan), "short": asdict(short_plan)},
             "price_mapping": {**asdict(mapping), "quality": mapping_reason} if mapping else {"quality": mapping_reason},
             "atas": {"health": self.runtime.atas.state.health.value, "instrument": self.runtime.atas.state.instrument,
@@ -171,6 +177,7 @@ class AnalysisEngine:
             "zones": [asdict(x) for x in potentials],
             "breakout": asdict(breakout), "trade_modes": [asdict(x) for x in modes],
             "long_plan": asdict(long_plan), "short_plan": asdict(short_plan),
+            "recent_important_events": important_events,
             "why_no_trade": why or ["等待AI/执行确认"],
         })
 
@@ -194,9 +201,7 @@ class AnalysisEngine:
         self.db.execute("INSERT INTO AIAnalysis(ts,snapshot_id,status,payload) VALUES(?,?,?,?)",
                         (datetime.now(timezone.utc).isoformat(), snapshot.snapshot_id, result.status,
                          json.dumps({"payload": result.payload, "error": result.error, "latency_ms": result.latency_ms}, ensure_ascii=False)))
-        await self.runtime.dashboard.push({
-            "ai_analysis": result.payload or {"status": result.status, "error": result.error},
-        })
+        await self.runtime.dashboard.push({"ai_analysis": result.payload or {"status": result.status, "error": result.error}})
         degradation = classify_degradation(mt5_alive=self.runtime.guardian.heartbeat_fresh(), atas_health=self.runtime.atas.state.health.value, ai_health=result.status)
         if not degradation.allow_new_ai_trades or not result.payload or result.status not in {"HEALTHY", "SLOW"}:
             self._record_no_trade(f"AI不可执行: {result.status}", {"error": result.error})
