@@ -8,23 +8,23 @@ if not defined PY if exist "Runtime\python\Scripts\python.exe" set "PY=Runtime\p
 if not defined PY set "PY=python"
 
 echo ======================================================
-echo GoldTradingSystem 本机只读预检
-echo 该步骤不会发送任何交易订单。
+echo GoldTradingSystem read-only machine preflight
+echo This step does not submit any trading order.
 echo ======================================================
 
 "%PY%" Tools\preflight.py --probe-mt5
 if errorlevel 1 (
   echo.
-  echo 预检发现问题，请保留 Runtime\acceptance-report.json。
+  echo Preflight found issues. Keep Runtime\acceptance-report.json.
 ) else (
   echo.
-  echo 基础预检完成。
+  echo Basic preflight completed.
 )
 
 echo.
-echo 正在生成脱敏诊断包（不会包含 API Key、secrets.local 或交易数据库）...
+echo Creating sanitized diagnostics package. API keys, secrets.local and trading database are excluded.
 "%PY%" Tools\collect_diagnostics.py
 
 echo.
-echo 完成。报告位于 Runtime\acceptance-report.json
+echo Done. Report: Runtime\acceptance-report.json
 pause
