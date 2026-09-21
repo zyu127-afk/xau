@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFrameworks>net8.0-windows;net10.0-windows</TargetFrameworks>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>GoldTradingDataBridge.ATAS</AssemblyName>
+    <RootNamespace>GoldTradingDataBridge.ATAS</RootNamespace>
+    <AtasInstallDir Condition="'$(AtasInstallDir)' == ''">$(ATAS_INSTALL_DIR)</AtasInstallDir>
+  </PropertyGroup>
+
+  <Target Name="ValidateAtasSdk" BeforeTargets="ResolveReferences">
+    <Error Condition="'$(AtasInstallDir)' == ''" Text="Set AtasInstallDir or ATAS_INSTALL_DIR to the installed ATAS folder." />
+    <Error Condition="!Exists('$(AtasInstallDir)\ATAS.Indicators.dll')" Text="ATAS.Indicators.dll was not found under $(AtasInstallDir)." />
+    <Error Condition="!Exists('$(AtasInstallDir)\ATAS.DataFeedsCore.dll')" Text="ATAS.DataFeedsCore.dll was not found under $(AtasInstallDir)." />
+  </Target>
+
+  <ItemGroup>
+    <ProjectReference Include="..\GoldTradingDataBridge\GoldTradingDataBridge.csproj" />
+    <Reference Include="ATAS.Indicators">
+      <HintPath>$(AtasInstallDir)\ATAS.Indicators.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="ATAS.DataFeedsCore">
+      <HintPath>$(AtasInstallDir)\ATAS.DataFeedsCore.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>
