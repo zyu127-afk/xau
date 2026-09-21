@@ -66,6 +66,7 @@ ai:
 
 history:
   rolling_days: 90
+  no_trade_dedupe_seconds: 15
 
 ui:
   host: 127.0.0.1
