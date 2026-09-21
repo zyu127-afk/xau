@@ -9,12 +9,15 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .ai_client import OpenAICompatibleClient
+from .breakout import assess_breakout
 from .degradation import classify_degradation
 from .guardian_protocol import GuardianCommand
 from .models import Bias, MarketRegime, TradeIntent
+from .potential_zones import rank_potential_zones
 from .snapshot_builder import build_snapshot
 from .stale import validate_intent
 from .structure import classify_market
+from .trade_modes import assess_modes
 from .trade_planner import actual_space_is_worthwhile, build_plans
 from .zones import build_zones, PriceZone
 
@@ -70,6 +73,14 @@ class AnalysisEngine:
     async def _fresh_structures(self, provider, symbol: str, names: tuple[str, ...]) -> dict:
         return {tf: await asyncio.to_thread(provider.bars, symbol, tf, 300) for tf in names}
 
+    @staticmethod
+    def _build_zones(bars_by_tf: dict) -> list[PriceZone]:
+        zones: list[PriceZone] = []
+        for tf in ("H4", "H1", "M30", "M15"):
+            if tf in bars_by_tf:
+                zones.extend(build_zones(tf, bars_by_tf[tf], max_each=3))
+        return zones
+
     async def run_once(self) -> None:
         if not self.runtime.guardian.heartbeat_fresh() or not self.runtime.guardian.state.symbol:
             return
@@ -87,11 +98,13 @@ class AnalysisEngine:
         bid, ask = float(tick["bid"]), float(tick["ask"])
         mid = (bid + ask) / 2.0
         structure = classify_market(bars_by_tf)
-        zones: list[PriceZone] = []
-        for tf in ("H4", "H1", "M30", "M15"):
-            zones.extend(build_zones(tf, bars_by_tf[tf], max_each=3))
+        zones = self._build_zones(bars_by_tf)
+        atr_ref = structure.structures.get("M15").atr if structure.structures.get("M15") else 0.0
+        potentials = rank_potential_zones(mid, zones, atr_ref, 3)
+        breakout = assess_breakout(bars_by_tf["M5"], zones)
         orderflow = self.runtime.orderflow.assess()
         orderflow_fp = self._orderflow_fingerprint()
+        modes = assess_modes(structure, potentials, breakout, orderflow)
         long_plan, short_plan = build_plans(mid, structure, zones, orderflow)
         positions = await asyncio.to_thread(provider.positions, symbol)
         gc_price = None
@@ -107,6 +120,9 @@ class AnalysisEngine:
                           "state_id": structure.state_id, "reasons": structure.reasons,
                           "timeframes": {k: asdict(v) for k, v in structure.structures.items()}},
             "zones": [self._zone_dict(z) for z in zones],
+            "potential_zones": [asdict(x) for x in potentials],
+            "breakout": asdict(breakout),
+            "trade_modes": [asdict(x) for x in modes],
             "orderflow": {"label": orderflow.label, "score": orderflow.score, "evidence": orderflow.evidence, "raw": orderflow.raw,
                           "freshness_fingerprint": orderflow_fp},
             "local_plans": {"long": asdict(long_plan), "short": asdict(short_plan)},
@@ -121,11 +137,13 @@ class AnalysisEngine:
         if structure.regime is MarketRegime.TRANSITION: why.append("市场处于转换状态")
         if self.runtime.atas.state.health.value != "HEALTHY": why.append("ATAS订单流不是HEALTHY")
         if not mapping: why.append("GC↔MT5映射仍在预热")
+        if not any(x.ready for x in modes): why.append("三种核心交易模式均未完成本地确认")
         await self.runtime.dashboard.push({
             "regime": structure.regime.value, "bias": structure.bias.value,
             "supports": [self._zone_dict(z) for z in zones if z.kind == "SUPPORT"][:3],
             "resistances": [self._zone_dict(z) for z in zones if z.kind == "RESISTANCE"][:3],
-            "zones": [self._zone_dict(z) for z in zones[:6]],
+            "zones": [asdict(x) for x in potentials],
+            "breakout": asdict(breakout), "trade_modes": [asdict(x) for x in modes],
             "long_plan": asdict(long_plan), "short_plan": asdict(short_plan),
             "why_no_trade": why or ["等待AI/执行确认"],
         })
@@ -146,30 +164,33 @@ class AnalysisEngine:
         self.last_ai_at = now
         result = await self.ai.analyze(self.system_prompt, {"snapshot_id": snapshot.snapshot_id, **dynamic})
         self.runtime.ai_status = result.status
+        self.runtime.ai_latency_ms = result.latency_ms
         self.db.execute("INSERT INTO AIAnalysis(ts,snapshot_id,status,payload) VALUES(?,?,?,?)",
                         (datetime.now(timezone.utc).isoformat(), snapshot.snapshot_id, result.status,
                          json.dumps({"payload": result.payload, "error": result.error, "latency_ms": result.latency_ms}, ensure_ascii=False)))
         degradation = classify_degradation(mt5_alive=self.runtime.guardian.heartbeat_fresh(), atas_health=self.runtime.atas.state.health.value, ai_health=result.status)
-        if not degradation.allow_new_ai_trades:
-            return
-        if not result.payload or result.status not in {"HEALTHY", "SLOW"}:
+        if not degradation.allow_new_ai_trades or not result.payload or result.status not in {"HEALTHY", "SLOW"}:
             return
         if float(result.payload.get("confidence", 0.0)) < self.min_ai_confidence:
             self.db.execute("INSERT INTO NoTradeEvents(ts,reason,payload) VALUES(?,?,?)",
                             (datetime.now(timezone.utc).isoformat(), "AI confidence below local threshold", json.dumps(result.payload, ensure_ascii=False)))
             return
-        # Re-read price, positions, structure and order flow after asynchronous AI latency.
         tick2 = await asyncio.to_thread(provider.tick, symbol)
         positions2 = await asyncio.to_thread(provider.positions, symbol)
         bars2 = await self._fresh_structures(provider, symbol, ("H1", "M15", "M5", "M1"))
         if not tick2 or any(len(v) < 30 for v in bars2.values()):
             return
-        combined = dict(bars_by_tf)
-        combined.update(bars2)
+        combined = dict(bars_by_tf); combined.update(bars2)
         structure2 = classify_market(combined)
+        zones2 = self._build_zones(combined)
         mid2 = (float(tick2["bid"]) + float(tick2["ask"])) / 2.0
+        atr2 = structure2.structures.get("M15").atr if structure2.structures.get("M15") else 0.0
+        potentials2 = rank_potential_zones(mid2, zones2, atr2, 3)
+        breakout2 = assess_breakout(combined["M5"], zones2)
+        current_of = self.runtime.orderflow.assess()
+        modes2 = assess_modes(structure2, potentials2, breakout2, current_of)
         current = build_snapshot(mid2, gc_price, structure2.state_id, positions2, self._orderflow_fingerprint(), dynamic)
-        current.snapshot_id = snapshot.snapshot_id  # same request lineage; all state fields are independently compared below.
+        current.snapshot_id = snapshot.snapshot_id
         for side in ("BUY", "SELL"):
             intent = self._ai_plan_to_intent(snapshot, result.payload, side)
             if intent is None:
@@ -179,31 +200,32 @@ class AnalysisEngine:
             ok, stale_reason = validate_intent(intent, snapshot, current, max_move)
             if not ok:
                 self.db.execute("INSERT INTO NoTradeEvents(ts,reason,payload) VALUES(?,?,?)",
-                                (datetime.now(timezone.utc).isoformat(), stale_reason, "{}"))
-                continue
+                                (datetime.now(timezone.utc).isoformat(), stale_reason, "{}")); continue
+            ready_modes = [m for m in modes2 if m.ready and m.side == side]
+            if not ready_modes:
+                self.db.execute("INSERT INTO NoTradeEvents(ts,reason,payload) VALUES(?,?,?)",
+                                (datetime.now(timezone.utc).isoformat(), f"{side}没有满足趋势回调/突破回踩/极值反转模式", "{}")); continue
             if structure2.regime in {MarketRegime.TREND, MarketRegime.EXTREME_TREND}:
                 if side == "BUY" and structure2.bias is not Bias.LONG: continue
                 if side == "SELL" and structure2.bias is not Bias.SHORT: continue
-            current_of = self.runtime.orderflow.assess()
             if side == "BUY" and current_of.score < 0.45: continue
             if side == "SELL" and current_of.score > -0.45: continue
             if self.runtime.logical_slot_active("A") and self.runtime.logical_slot_active("B"):
                 self.db.execute("INSERT INTO NoTradeEvents(ts,reason,payload) VALUES(?,?,?)",
-                                (datetime.now(timezone.utc).isoformat(), "Position A/B already occupied", "{}"))
-                return
+                                (datetime.now(timezone.utc).isoformat(), "Position A/B already occupied", "{}")); return
             est_sl = abs(mid2 - intent.stop_loss)
-            worthwhile, reason = actual_space_is_worthwhile(mid2, side, zones, abs(float(tick2["ask"]) - float(tick2["bid"])), est_sl)
+            worthwhile, reason = actual_space_is_worthwhile(mid2, side, zones2, abs(float(tick2["ask"]) - float(tick2["bid"])), est_sl)
             if not worthwhile:
                 self.db.execute("INSERT INTO NoTradeEvents(ts,reason,payload) VALUES(?,?,?)",
-                                (datetime.now(timezone.utc).isoformat(), reason, "{}"))
-                continue
+                                (datetime.now(timezone.utc).isoformat(), reason, "{}")); continue
             slot = "A" if not self.runtime.logical_slot_active("A") else "B"
+            mode_names = ",".join(m.mode.value for m in ready_modes)
             command = GuardianCommand(intent.intent_id, "OPEN", slot, side, intent.lot, intent.stop_loss, intent.take_profit,
-                                      intent.zone_low, intent.zone_high, intent.valid_until, intent.reason)
+                                      intent.zone_low, intent.zone_high, intent.valid_until, f"{mode_names}: {intent.reason}")
             accepted, guardian_reason = await self.runtime.guardian.submit(command)
             self.db.execute("INSERT INTO SystemEvents(ts,level,component,event,payload) VALUES(?,?,?,?,?)",
                             (datetime.now(timezone.utc).isoformat(), "INFO" if accepted else "WARNING", "Guardian", "OPEN_ACK",
-                             json.dumps({"accepted": accepted, "reason": guardian_reason, "slot": slot, "side": side}, ensure_ascii=False)))
+                             json.dumps({"accepted": accepted, "reason": guardian_reason, "slot": slot, "side": side, "modes": mode_names}, ensure_ascii=False)))
             break
 
     async def loop(self) -> None:
