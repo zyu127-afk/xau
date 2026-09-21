@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 import platform
+import shutil
 import socket
 import sys
 from datetime import datetime, timezone
@@ -38,6 +39,16 @@ def _read_yaml(path: Path) -> dict[str, Any]:
         return {}
 
 
+def _read_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
 def _safe_secret_status(path: Path) -> dict[str, Any]:
     # Never return secret values or full secret file contents.
     if not path.exists():
@@ -54,6 +65,45 @@ def _safe_secret_status(path: Path) -> dict[str, Any]:
     return {"exists": True, "api_key_present": present}
 
 
+def _binding_status() -> dict[str, Any]:
+    mt5 = _read_json(RUNTIME / "mt5-binding.json")
+    atas = _read_json(RUNTIME / "atas-binding.json")
+
+    mt5_ex5_exists = False
+    experts_path = str(mt5.get("experts_path", "") or "")
+    if experts_path:
+        try:
+            mt5_ex5_exists = (Path(experts_path) / "GoldTradingGuardian.ex5").exists()
+        except OSError:
+            mt5_ex5_exists = False
+
+    atas_dll_exists = False
+    target_path = str(atas.get("target_path", "") or "")
+    if target_path:
+        try:
+            atas_dll_exists = (Path(target_path) / "GoldTradingDataBridge.ATAS.dll").exists()
+        except OSError:
+            atas_dll_exists = False
+
+    # No machine paths are returned here. The report is safe to share for support.
+    return {
+        "mt5": {
+            "record_exists": bool(mt5),
+            "source_deployed": bool(mt5.get("source_deployed", False)),
+            "compile_attempted": bool(mt5.get("compile_attempted", False)),
+            "ex5_compiled": bool(mt5.get("ex5_compiled", False)),
+            "ex5_exists_now": mt5_ex5_exists,
+        },
+        "atas": {
+            "record_exists": bool(atas),
+            "deployed": bool(atas.get("deployed", False)),
+            "target_framework": str(atas.get("target_framework", "") or ""),
+            "bridge_dll_exists_now": atas_dll_exists,
+        },
+        "dotnet_sdk_available": shutil.which("dotnet") is not None,
+    }
+
+
 def _candidate_paths() -> dict[str, list[str]]:
     found: dict[str, list[str]] = {"mt5_terminal": [], "metaeditor": [], "atas": []}
     if os.name != "nt":
@@ -61,7 +111,7 @@ def _candidate_paths() -> dict[str, list[str]]:
 
     roots = [
         Path(os.environ.get("PROGRAMFILES", "C:/Program Files")),
-        Path(os.environ.get("PROGRAMFILES(X86)", "C:/Program Files (x86)")),
+        Path(os.environ.get("PROGRAMFILES(X86", "C:/Program Files (x86)")),
         Path(os.environ.get("LOCALAPPDATA", "")),
     ]
     for base in roots:
@@ -81,7 +131,7 @@ def _candidate_paths() -> dict[str, list[str]]:
 
     local = Path(os.environ.get("LOCALAPPDATA", ""))
     program_files = Path(os.environ.get("PROGRAMFILES", "C:/Program Files"))
-    for p in [program_files / "ATAS", local / "ATAS", local / "Programs" / "ATAS"]:
+    for p in [program_files / "ATAS", program_files / "ATAS Platform", local / "ATAS", local / "ATAS Platform", local / "Programs" / "ATAS"]:
         if p.exists():
             found["atas"].append(str(p))
     return found
@@ -155,9 +205,9 @@ def run(probe_mt5: bool = False) -> dict[str, Any]:
     ]
 
     report: dict[str, Any] = {
-        "schema": 1,
+        "schema": 2,
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "root": str(ROOT),
+        "root_present": ROOT.exists(),
         "os": platform.platform(),
         "python": sys.version.split()[0],
         "read_only": True,
@@ -168,6 +218,7 @@ def run(probe_mt5: bool = False) -> dict[str, Any]:
         },
         "secrets": _safe_secret_status(ROOT / "Config" / "secrets.local"),
         "platform_candidates": _candidate_paths(),
+        "bindings": _binding_status(),
         "localhost": {name: _tcp("127.0.0.1", port) for name, port in ports.items()},
         "ports": ports,
     }
