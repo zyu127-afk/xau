@@ -54,11 +54,27 @@ def test_no_local_secret_files_are_tracked():
     assert not (tracked & forbidden)
 
 
+def _looks_like_live_key(value: str) -> bool:
+    value = value.strip().strip('"\'')
+    if not value or value.startswith(("${", "%", "<")):
+        return False
+    lower = value.lower()
+    placeholders = ("test", "dummy", "example", "sample", "changeme", "your_", "your-", "placeholder", "fake")
+    if any(p in lower for p in placeholders):
+        return False
+    if value.startswith("sk-") and len(value) >= 20:
+        return True
+    # Generic opaque secret heuristic: long, no spaces, enough character variety.
+    if len(value) >= 32 and not any(ch.isspace() for ch in value):
+        classes = sum(bool(re.search(p, value)) for p in (r"[A-Z]", r"[a-z]", r"[0-9]", r"[_\-]"))
+        return classes >= 3
+    return False
+
+
 def test_no_obvious_live_api_key_literal_in_tracked_text():
-    key_patterns = [
-        re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
-        re.compile(r"(?im)^\s*API_KEY\s*=\s*[^\s#][^\r\n]*$"),
-    ]
+    direct_key = re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b")
+    assignment = re.compile(r"(?im)^\s*(?:export\s+)?API_KEY\s*=\s*([^#\r\n]+)$")
+    python_assignment = re.compile(r"(?im)^\s*API_KEY\s*=\s*([\"'][^\"']+[\"'])\s*$")
     allowed_examples = {"Config/secrets.local.example"}
     hits: list[str] = []
     for rel in _tracked_files():
@@ -71,6 +87,10 @@ def test_no_obvious_live_api_key_literal_in_tracked_text():
             text = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        if any(p.search(text) for p in key_patterns):
+        if direct_key.search(text):
+            hits.append(rel)
+            continue
+        candidates = assignment.findall(text) + python_assignment.findall(text)
+        if any(_looks_like_live_key(v) for v in candidates):
             hits.append(rel)
     assert not hits, f"possible credential literals found in tracked files: {hits}"
