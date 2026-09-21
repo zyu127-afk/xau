@@ -1,0 +1,9 @@
+# 此文件只保存平台连接路径；由安装器生成 Config/paths.yaml。
+# 不要把用户目录硬编码进源码。
+mt5:
+  terminal_data_path: ""
+  terminal_origin: ""
+  metaeditor_path: ""
+atas:
+  install_path: ""
+  bridge_target_path: ""
