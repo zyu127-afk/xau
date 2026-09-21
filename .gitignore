@@ -1,9 +1,15 @@
 Config/secrets.local
+Config/config.yaml
+Config/paths.yaml
 Data/*.db
+Data/*.db-*
 Data/raw/
 Logs/*.log
 Backup/*
 Runtime/python/
+Runtime/control.json
+Runtime/dashboard.token
 __pycache__/
 *.pyc
+*.pyo
 .env
