@@ -52,7 +52,8 @@ def _read_control() -> dict:
     base = {"ai_sleep": False, "pause_new_entries": False, "stop_system": False, "emergency_close_request": ""}
     try:
         raw = json.loads(CONTROL_FILE.read_text(encoding="utf-8"))
-        if isinstance(raw, dict): base.update({k: raw.get(k, v) for k, v in base.items()})
+        if isinstance(raw, dict):
+            base.update({k: raw.get(k, v) for k, v in base.items()})
     except (OSError, json.JSONDecodeError):
         pass
     return base
@@ -66,7 +67,8 @@ def _write_control(data: dict) -> None:
         os.replace(tmp, CONTROL_FILE)
     finally:
         try:
-            if os.path.exists(tmp): os.unlink(tmp)
+            if os.path.exists(tmp):
+                os.unlink(tmp)
         except OSError:
             pass
 
@@ -83,9 +85,11 @@ def state():
 
 
 @app.put("/api/state")
-def update_state(payload: dict):
-    # This endpoint is intended only for the local Engine publisher.
-    with LOCK: STATE.update(payload)
+def update_state(payload: dict, x_gts_token: str | None = Header(default=None)):
+    # Only the authenticated local Engine publisher may mutate displayed state.
+    _require_token(x_gts_token)
+    with LOCK:
+        STATE.update(payload)
     return {"ok": True}
 
 
@@ -103,28 +107,36 @@ def control():
 @app.post("/api/control/ai-sleep")
 def ai_sleep(payload: dict, x_gts_token: str | None = Header(default=None)):
     _require_token(x_gts_token)
-    data = _read_control(); data["ai_sleep"] = bool(payload.get("enabled", True)); _write_control(data)
+    data = _read_control()
+    data["ai_sleep"] = bool(payload.get("enabled", True))
+    _write_control(data)
     return data
 
 
 @app.post("/api/control/pause-new-entries")
 def pause_new_entries(payload: dict, x_gts_token: str | None = Header(default=None)):
     _require_token(x_gts_token)
-    data = _read_control(); data["pause_new_entries"] = bool(payload.get("enabled", True)); _write_control(data)
+    data = _read_control()
+    data["pause_new_entries"] = bool(payload.get("enabled", True))
+    _write_control(data)
     return data
 
 
 @app.post("/api/control/emergency-close")
 def emergency_close(x_gts_token: str | None = Header(default=None)):
     _require_token(x_gts_token)
-    data = _read_control(); data["emergency_close_request"] = str(uuid.uuid4()); _write_control(data)
+    data = _read_control()
+    data["emergency_close_request"] = str(uuid.uuid4())
+    _write_control(data)
     return {"ok": True, "request_id": data["emergency_close_request"]}
 
 
 @app.post("/api/control/stop-system")
 def stop_system(x_gts_token: str | None = Header(default=None)):
     _require_token(x_gts_token)
-    data = _read_control(); data["stop_system"] = True; _write_control(data)
+    data = _read_control()
+    data["stop_system"] = True
+    _write_control(data)
     return {"ok": True, "note": "Engine will stop without flattening positions; Guardian remains local protection."}
 
 
