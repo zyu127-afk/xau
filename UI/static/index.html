@@ -1,23 +1,40 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>GoldTradingSystem 驾驶舱</title>
+<title>GoldTradingSystem 中文驾驶舱</title>
 <style>
-body{font-family:Segoe UI,Microsoft YaHei,sans-serif;background:#101318;color:#e9eef6;margin:0}header{padding:16px 22px;background:#171b22;font-size:22px;font-weight:700}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;padding:12px}.card{background:#171b22;border:1px solid #2a303a;border-radius:8px;padding:14px}.title{font-weight:700;margin-bottom:10px}.row{display:flex;justify-content:space-between;gap:16px;padding:4px 0}.ok{color:#55d187}.warn{color:#f2c14e}.bad{color:#ff6b6b}.muted{color:#9aa6b2}pre{white-space:pre-wrap;word-break:break-word;margin:0}</style></head>
-<body><header>GoldTradingSystem 中文驾驶舱</header><div class="grid" id="grid"></div>
+:root{font-family:Segoe UI,Microsoft YaHei,sans-serif;color-scheme:dark}*{box-sizing:border-box}body{background:#101318;color:#e9eef6;margin:0}header{position:sticky;top:0;z-index:2;padding:14px 20px;background:#171b22;border-bottom:1px solid #2a303a;display:flex;gap:12px;align-items:center;justify-content:space-between}header strong{font-size:21px}.controls{display:flex;gap:8px;flex-wrap:wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;padding:12px}.card{background:#171b22;border:1px solid #2a303a;border-radius:9px;padding:14px;min-height:90px}.wide{grid-column:span 2}.title{font-weight:700;margin-bottom:10px}.row{display:flex;justify-content:space-between;gap:16px;padding:4px 0;border-bottom:1px solid #202630}.row:last-child{border:0}.ok{color:#55d187}.warn{color:#f2c14e}.bad{color:#ff6b6b}.muted{color:#9aa6b2}.purple{color:#bb86fc}.orange{color:#ff9f43}pre{white-space:pre-wrap;word-break:break-word;margin:0;font:13px/1.5 Consolas,Microsoft YaHei,monospace}button{border:1px solid #3b4655;background:#232a34;color:#edf3fa;border-radius:6px;padding:7px 10px;cursor:pointer}button:hover{background:#303947}button.danger{border-color:#863d45;color:#ff9a9a}.pill{font-size:12px;border-radius:999px;padding:3px 8px;background:#242b34}.pos{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.posbox{background:#11151b;border:1px solid #29313c;border-radius:7px;padding:10px}.small{font-size:12px;color:#9aa6b2}@media(max-width:760px){.wide{grid-column:span 1}.pos{grid-template-columns:1fr}header{align-items:flex-start;flex-direction:column}}
+</style></head>
+<body>
+<header><div><strong>GoldTradingSystem 中文驾驶舱</strong><div class="small">Dashboard 只展示与控制本机系统；最终交易执行权始终在 MT5 Guardian。</div></div><div class="controls"><button id="aiSleep" onclick="toggleControl('ai-sleep','ai_sleep')">AI Sleep</button><button id="pause" onclick="toggleControl('pause-new-entries','pause_new_entries')">暂停新开仓</button><button onclick="resetControls()">恢复控制</button><button onclick="stopSystem()">停止 Engine</button><button class="danger" onclick="emergencyClose()">紧急平掉系统仓位</button></div></header>
+<div class="grid" id="grid"></div>
 <script>
-function cls(v){return ['HEALTHY','CONNECTED','可执行','LONG','UP','TRUE_BREAKOUT'].includes(v)?'ok':['OFFLINE','禁止交易','已失效','FALSE_BREAKOUT'].includes(v)?'bad':'warn'}
-function card(t,html){return `<section class="card"><div class="title">${t}</div>${html}</section>`}
-function j(x){return JSON.stringify(x,null,2)}
-async function refresh(){try{const s=await (await fetch('/api/state')).json();let h='';
-h+=card('系统状态',Object.entries(s.system||{}).map(([k,v])=>`<div class="row"><span>${k}</span><b class="${cls(v)}">${v}</b></div>`).join(''));
-h+=card('当前市场',`<pre>${j(s.market)}</pre>`);
-h+=card('市场状态',`<div class="row"><span>状态</span><b>${s.regime}</b></div><div class="row"><span>优先方向</span><b>${s.bias}</b></div>`);
-h+=card('多周期强支撑 / 强阻力',`<pre>支撑\n${j(s.supports)}\n\n阻力\n${j(s.resistances)}</pre>`);
-h+=card('前三潜在交易区',`<pre>${j(s.zones)}</pre>`);
+let TOKEN='';let LAST={};
+function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function cls(v){v=String(v??'').toUpperCase();if(['HEALTHY','CONNECTED','ENABLED','可执行','LONG','UP','TRUE_BREAKOUT'].includes(v))return'ok';if(['OFFLINE','TIMEOUT','SERVER_ERROR','PAUSED','禁止交易','已失效','FALSE_BREAKOUT'].includes(v))return'bad';if(['SLEEP','SLOW'].includes(v))return'purple';if(v.includes('DEGRADED')||v.includes('WARMING')||v.includes('STALE'))return'orange';return'warn'}
+function card(t,html,wide=false){return `<section class="card ${wide?'wide':''}"><div class="title">${esc(t)}</div>${html}</section>`}
+function row(k,v){return `<div class="row"><span>${esc(k)}</span><b class="${cls(v)}">${esc(v)}</b></div>`}
+function j(x){return esc(JSON.stringify(x??{},null,2))}
+function zone(z){if(!z)return '-';let q=z.zone||z;if(q.low==null||q.high==null)return '-';return `${Number(q.low).toFixed(2)} - ${Number(q.high).toFixed(2)}${z.status?' · '+z.status:''}`}
+function posBox(name,p){if(!p||!p.active)return `<div class="posbox"><b>Position ${name}</b><div class="muted">空闲</div></div>`;return `<div class="posbox"><b>Position ${name}</b>${row('方向',p.side)}${row('手数',p.lot)}${row('Entry',p.entry_price)}${row('Current',p.current_price)}${row('SL',p.current_sl)}${row('TP',p.current_tp||'-')}${row('MFE',p.mfe)}${row('MAE',p.mae)}${row('持仓时间',p.entry_time||'-')}</div>`}
+async function token(){if(!TOKEN){const r=await fetch('/api/control-token');TOKEN=(await r.json()).token}return TOKEN}
+async function post(path,body){const t=await token();const r=await fetch('/api/control/'+path,{method:'POST',headers:{'Content-Type':'application/json','X-GTS-Token':t},body:body===undefined?undefined:JSON.stringify(body)});if(!r.ok)throw new Error(await r.text());return r.json()}
+async function toggleControl(path,key){const c=LAST.control||{};await post(path,{enabled:!c[key]});await refresh()}
+async function resetControls(){await post('reset');await refresh()}
+async function stopSystem(){if(confirm('停止 Python Engine？不会自动平仓，Guardian 仍保留本地/服务器保护。'))await post('stop-system')}
+async function emergencyClose(){if(confirm('确认紧急平掉 GoldTradingSystem 的全部系统仓位并撤销系统挂单？'))await post('emergency-close')}
+async function refresh(){try{const s=await (await fetch('/api/state',{cache:'no-store'})).json();LAST=s;const c=s.control||{};document.getElementById('aiSleep').textContent=c.ai_sleep?'退出 AI Sleep':'AI Sleep';document.getElementById('pause').textContent=c.pause_new_entries?'恢复新开仓':'暂停新开仓';let h='';
+h+=card('系统状态',Object.entries(s.system||{}).map(([k,v])=>row(k,v)).join(''));
+h+=card('当前市场',Object.entries(s.market||{}).map(([k,v])=>row(k,v)).join(''));
+h+=card('市场状态',row('状态',s.regime)+row('当前优先方向',s.bias)+row('ATAS综合方向',s.orderflow_assessment));
+h+=card('多周期结构',`<pre>${j(s.structures||{})}</pre>`);
+h+=card('强支撑 / 强阻力',`<b>支撑</b><br>${(s.supports||[]).slice(0,3).map((x,i)=>`${i+1}. ${esc(zone(x))}`).join('<br>')||'-'}<br><br><b>阻力</b><br>${(s.resistances||[]).slice(0,3).map((x,i)=>`${i+1}. ${esc(zone(x))}`).join('<br>')||'-'}`);
+h+=card('前三潜在交易区',`${(s.zones||[]).slice(0,3).map((x,i)=>`${i+1}. ${esc(x.side||'')} · ${esc(zone(x))}`).join('<br>')||'-'}`);
 h+=card('真假突破',`<pre>${j(s.breakout)}</pre>`);
 h+=card('三种交易模式',`<pre>${j(s.trade_modes)}</pre>`);
-h+=card('ATAS综合判断',`<pre>${s.orderflow_assessment}</pre>`);
+h+=card('DeepSeek 综合判断',`<pre>${j(s.ai_analysis)}</pre>`,true);
 h+=card('LONG PLAN',`<pre>${j(s.long_plan)}</pre>`);h+=card('SHORT PLAN',`<pre>${j(s.short_plan)}</pre>`);
-h+=card('为什么没有开仓',`<pre>${(s.why_no_trade||[]).join('\n')}</pre>`);h+=card('当前持仓',`<pre>${j(s.positions)}</pre>`);document.getElementById('grid').innerHTML=h}catch(e){document.getElementById('grid').innerHTML=card('Dashboard','等待 Python Engine...')}}
+h+=card('为什么没有开仓',`<pre>${esc((s.why_no_trade||[]).join('\n'))}</pre>`,true);
+h+=card('当前持仓',`<div class="pos">${posBox('A',(s.positions||{}).A)}${posBox('B',(s.positions||{}).B)}</div>`,true);
+document.getElementById('grid').innerHTML=h}catch(e){document.getElementById('grid').innerHTML=card('Dashboard','等待 Python Engine… '+esc(e.message))}}
 refresh();setInterval(refresh,1000);
 </script></body></html>
