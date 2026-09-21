@@ -1,0 +1,28 @@
+name: Build delivery packages
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve version
+        id: version
+        shell: pwsh
+        run: |
+          $v=(Get-Content Version/version.json -Raw | ConvertFrom-Json).version
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+      - name: Build Dev and Portable ZIPs
+        shell: pwsh
+        run: ./Tools/build_release.ps1 -Version '${{ steps.version.outputs.version }}'
+      - name: Upload delivery artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GoldTradingSystem-${{ steps.version.outputs.version }}
+          path: Backup/GoldTradingSystem_*.zip
+          if-no-files-found: error
+          retention-days: 30
