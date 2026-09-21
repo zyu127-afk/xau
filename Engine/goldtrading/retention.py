@@ -5,7 +5,8 @@ from .database import Database
 
 
 ROLLING_TABLES = (
-    "MarketSnapshots", "OrderFlowEvents", "PriceMapping", "AIAnalysis", "NoTradeEvents", "PositionEvents"
+    "MarketSnapshots", "OrderFlowEvents", "OrderFlowOutcomes", "PriceMapping",
+    "AIAnalysis", "NoTradeEvents", "PositionEvents"
 )
 
 
