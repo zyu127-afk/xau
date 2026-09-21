@@ -12,6 +12,8 @@ FAST_EVENT_TYPES = {
     "liquidity_pull", "liquidity_stack", "order_flow_signal",
 }
 
+HORIZON_EPSILON_SECONDS = 1e-6
+
 
 @dataclass(slots=True)
 class PendingFastEvent:
@@ -63,11 +65,15 @@ class FastEventOutcomeTracker:
             return None
         p = event.get("payload") if isinstance(event.get("payload"), dict) else {}
         raw_gc = p.get("price", p.get("last"))
-        try: gc_price = None if raw_gc is None else float(raw_gc)
-        except (TypeError, ValueError): gc_price = None
+        try:
+            gc_price = None if raw_gc is None else float(raw_gc)
+        except (TypeError, ValueError):
+            gc_price = None
         raw_strength = p.get("strength", event.get("strength"))
-        try: strength = None if raw_strength is None else float(raw_strength)
-        except (TypeError, ValueError): strength = None
+        try:
+            strength = None if raw_strength is None else float(raw_strength)
+        except (TypeError, ValueError):
+            strength = None
         item = PendingFastEvent(
             event_uid=uuid4().hex,
             created_monotonic=time.monotonic(),
@@ -90,14 +96,24 @@ class FastEventOutcomeTracker:
         outcomes: list[EventOutcome] = []
         keep: list[PendingFastEvent] = []
         for item in self.pending:
-            age = now - item.created_monotonic
+            age = max(0.0, now - item.created_monotonic)
             for horizon in self.horizons:
-                if horizon in item.completed_horizons or age < horizon:
+                if horizon in item.completed_horizons:
+                    continue
+                if age + HORIZON_EPSILON_SECONDS < horizon:
                     continue
                 move = None if item.mt5_price is None else float(current_mt5) - item.mt5_price
                 outcome = EventOutcome(
-                    item.event_uid, horizon, item.ts_utc, item.event_type, item.instrument,
-                    item.gc_price, item.mt5_price, float(current_mt5), move, item.strength,
+                    item.event_uid,
+                    horizon,
+                    item.ts_utc,
+                    item.event_type,
+                    item.instrument,
+                    item.gc_price,
+                    item.mt5_price,
+                    float(current_mt5),
+                    move,
+                    item.strength,
                 )
                 outcomes.append(outcome)
                 self.recent_outcomes.append(asdict(outcome))
