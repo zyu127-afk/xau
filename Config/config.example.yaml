@@ -1,0 +1,30 @@
+system:
+  name: GoldTradingSystem
+  environment: paper
+  max_position_logics: 2
+paths:
+  data: ./Data
+  logs: ./Logs
+  backup: ./Backup
+  runtime: ./Runtime
+trading:
+  default_lot: 0.01
+  weekend_protection: true
+  overnight_preference: avoid
+ai:
+  provider: openai_compatible
+  base_url: ""
+  model: ""
+  timeout_seconds: 15
+  retry: 1
+  max_tokens: 2000
+  temperature: 0.1
+  proxy: ""
+  secrets_file: ./Config/secrets.local
+atas:
+  require_mbo: false
+  host: 127.0.0.1
+  port: 17831
+engine:
+  host: 127.0.0.1
+  port: 17832
