@@ -16,6 +16,13 @@ CREATE TABLE IF NOT EXISTS OrderFlowEvents(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, event_type TEXT NOT NULL,
   gc_price REAL, mt5_price REAL, strength REAL, payload TEXT
 );
+CREATE TABLE IF NOT EXISTS OrderFlowOutcomes(
+  event_uid TEXT NOT NULL, horizon_seconds INTEGER NOT NULL,
+  ts TEXT NOT NULL, event_type TEXT NOT NULL, instrument TEXT,
+  gc_price REAL, start_mt5 REAL, end_mt5 REAL NOT NULL, move REAL, strength REAL,
+  payload TEXT,
+  PRIMARY KEY(event_uid,horizon_seconds)
+);
 CREATE TABLE IF NOT EXISTS PriceMapping(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, a REAL, b REAL,
   correlation REAL, latency_ms REAL, payload TEXT
@@ -55,6 +62,7 @@ CREATE TABLE IF NOT EXISTS Versions(
 );
 CREATE INDEX IF NOT EXISTS idx_market_ts ON MarketSnapshots(ts);
 CREATE INDEX IF NOT EXISTS idx_orderflow_ts ON OrderFlowEvents(ts);
+CREATE INDEX IF NOT EXISTS idx_outcomes_ts ON OrderFlowOutcomes(ts);
 CREATE INDEX IF NOT EXISTS idx_mapping_ts ON PriceMapping(ts);
 CREATE INDEX IF NOT EXISTS idx_ai_ts ON AIAnalysis(ts);
 CREATE INDEX IF NOT EXISTS idx_notrade_ts ON NoTradeEvents(ts);
