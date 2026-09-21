@@ -16,11 +16,11 @@ function Test-GtsPython([string]$Exe){
 
 if((Test-Path $embedded) -and -not $Force){
   if(Test-GtsPython $embedded){
-    Write-Host "[Runtime] 使用已内置 Portable Python: $embedded"
+    Write-Host "[Runtime] Using bundled Portable Python: $embedded"
     Write-Host $embedded
     return
   }
-  throw '检测到 Runtime\python\python.exe，但依赖自检失败。请重新构建 Portable runtime 或使用 -Force。'
+  throw 'Runtime\python\python.exe exists, but dependency self-test failed. Rebuild the Portable runtime or use -Force.'
 }
 
 function Find-Python {
@@ -41,23 +41,23 @@ function Find-Python {
 
 $base=Find-Python $PythonExe
 if(-not $base){
-  throw '未找到可用 Python 3，也没有内置 Portable Python。请使用正式 Portable ZIP，或安装 Python 3.11/3.12（64位）后重试。'
+  throw 'No usable Python 3 was found and no bundled Portable Python exists. Use the official Portable ZIP or install 64-bit Python 3.11/3.12.'
 }
 
 if((Test-Path $runtime) -and $Force){ Remove-Item $runtime -Recurse -Force }
 if(-not (Test-Path $venv)){
   if(Test-Path $runtime){ Remove-Item $runtime -Recurse -Force }
-  Write-Host "[Runtime] 创建虚拟环境: $runtime"
+  Write-Host "[Runtime] Creating virtual environment: $runtime"
   & $base -m venv $runtime
-  if($LASTEXITCODE -ne 0){ throw 'Python 虚拟环境创建失败。' }
+  if($LASTEXITCODE -ne 0){ throw 'Failed to create Python virtual environment.' }
 }
-if(-not (Test-Path $venv)){ throw 'Python 虚拟环境缺少 Scripts\python.exe。' }
+if(-not (Test-Path $venv)){ throw 'Python virtual environment is missing Scripts\python.exe.' }
 & $venv -m pip install --upgrade pip
-if($LASTEXITCODE -ne 0){ throw 'pip 更新失败。' }
+if($LASTEXITCODE -ne 0){ throw 'pip upgrade failed.' }
 & $venv -m pip install --no-cache-dir -r (Join-Path $root 'Engine\requirements-windows.txt')
-if($LASTEXITCODE -ne 0){ throw 'Engine Windows 依赖安装失败。' }
+if($LASTEXITCODE -ne 0){ throw 'Engine Windows dependency installation failed.' }
 & $venv -m pip install --no-cache-dir -r (Join-Path $root 'UI\requirements.txt')
-if($LASTEXITCODE -ne 0){ throw 'UI 依赖安装失败。' }
-if(-not (Test-GtsPython $venv)){ throw 'Python 环境依赖自检失败。' }
-Write-Host '[Runtime] Python venv 环境准备完成。'
+if($LASTEXITCODE -ne 0){ throw 'UI dependency installation failed.' }
+if(-not (Test-GtsPython $venv)){ throw 'Python dependency self-test failed.' }
+Write-Host '[Runtime] Python environment is ready.'
 Write-Host $venv
