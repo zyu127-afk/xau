@@ -2,8 +2,19 @@ name: Build delivery packages
 on:
   workflow_dispatch:
   push:
+    branches: [main]
     tags:
       - 'v*'
+    paths:
+      - '.github/workflows/release-packages.yml'
+      - 'Tools/build_portable_python.ps1'
+      - 'Tools/build_release.ps1'
+      - 'Tools/install_runtime.ps1'
+      - 'Tools/install.ps1'
+      - 'Start/**'
+      - 'Engine/requirements*.txt'
+      - 'UI/requirements.txt'
+      - 'Version/version.json'
 
 jobs:
   package:
