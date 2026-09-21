@@ -1,6 +1,7 @@
 #property strict
-#property version   "0.10"
+#property version   "0.11"
 #property description "GoldTradingSystem Guardian - final local execution and risk authority"
+#property description "IPC requires the local engine address to be allowed in MT5 Expert Advisors network settings."
 
 #include <Trade/Trade.mqh>
 
@@ -18,7 +19,7 @@ string g_symbol="";
 
 string SlotKey(const string slot)
 {
-   return StringFormat("GTS_%I64d_%s_%s", AccountInfoInteger(ACCOUNT_LOGIN), g_symbol, slot);
+   return StringFormat("GTS_%I64d_%s_%s",AccountInfoInteger(ACCOUNT_LOGIN),g_symbol,slot);
 }
 
 bool SlotActive(const string slot)
@@ -132,9 +133,9 @@ bool WeekendProtectionShouldBeActive()
    if(dt.day_of_week==0 || dt.day_of_week==6) return true;
    if(dt.day_of_week!=5) return false;
    int end_sec=0;
-   if(!FridayLastSessionEndSeconds(end_sec)) return true; // fail safe on Friday when session cannot be determined
+   if(!FridayLastSessionEndSeconds(end_sec)) return true;
    int now_sec=dt.hour*3600+dt.min*60+dt.sec;
-   return now_sec >= end_sec-InpWeekendFlattenMinutes*60;
+   return now_sec>=end_sec-InpWeekendFlattenMinutes*60;
 }
 
 void CancelAllSystemOrders()
@@ -143,8 +144,9 @@ void CancelAllSystemOrders()
    {
       ulong ticket=0;
       if(!IsSystemOrderByIndex(i,ticket)) continue;
-      if(!g_trade.OrderDelete(ticket))
-         PrintFormat("GUARDIAN cancel failed ticket=%I64u ret=%u",ticket,g_trade.ResultRetcode());
+      bool basic=g_trade.OrderDelete(ticket);
+      if(!basic || g_trade.ResultRetcode()!=TRADE_RETCODE_DONE)
+         PrintFormat("GUARDIAN cancel failed ticket=%I64u ret=%u %s",ticket,g_trade.ResultRetcode(),g_trade.ResultRetcodeDescription());
    }
 }
 
@@ -154,8 +156,9 @@ void CloseAllSystemPositions()
    {
       ulong ticket=0;
       if(!IsSystemPositionByIndex(i,ticket)) continue;
-      if(!g_trade.PositionClose(ticket))
-         PrintFormat("GUARDIAN close failed ticket=%I64u ret=%u",ticket,g_trade.ResultRetcode());
+      bool basic=g_trade.PositionClose(ticket);
+      if(!basic || (g_trade.ResultRetcode()!=TRADE_RETCODE_DONE && g_trade.ResultRetcode()!=TRADE_RETCODE_DONE_PARTIAL))
+         PrintFormat("GUARDIAN close failed ticket=%I64u ret=%u %s",ticket,g_trade.ResultRetcode(),g_trade.ResultRetcodeDescription());
    }
    bool any=false;
    for(int i=0;i<PositionsTotal();i++)
@@ -168,9 +171,8 @@ void CloseAllSystemPositions()
 
 void EnforceWeekendProtection()
 {
-   bool active=WeekendProtectionShouldBeActive();
-   g_weekend_protection=active;
-   if(!active) return;
+   g_weekend_protection=WeekendProtectionShouldBeActive();
+   if(!g_weekend_protection) return;
    CancelAllSystemOrders();
    CloseAllSystemPositions();
 }
@@ -190,7 +192,7 @@ bool ValidateNewOrder(const string slot,const ENUM_ORDER_TYPE type,const double 
    if(ActiveLogicalSlots()>=InpMaxLogicalPositions){ why="max logical positions"; return false; }
    if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED)){ why="terminal trading disabled"; return false; }
    long mode=SymbolInfoInteger(g_symbol,SYMBOL_TRADE_MODE);
-   if(mode==SYMBOL_TRADE_MODE_DISABLED){ why="symbol trading disabled"; return false; }
+   if(mode==SYMBOL_TRADE_MODE_DISABLED || mode==SYMBOL_TRADE_MODE_CLOSEONLY){ why="symbol cannot open new trades"; return false; }
    if(!LotIsLegal(lot)){ why="illegal lot"; return false; }
    if(!SpreadIsHealthy()){ why="spread abnormal"; return false; }
    if(!HasMargin(type,lot)){ why="insufficient margin"; return false; }
@@ -211,10 +213,10 @@ bool ValidateNewOrder(const string slot,const ENUM_ORDER_TYPE type,const double 
 bool OpenMarket(const string slot,const string side,const double requested_lot,const double sl,const double tp,
                 const double zone_low,const double zone_high,const datetime valid_until,const string reason)
 {
+   if(side!="BUY" && side!="SELL"){ Print("GUARDIAN reject: invalid side"); return false; }
    double lot=NormalizeLot(requested_lot);
    ENUM_ORDER_TYPE type=(side=="BUY" ? ORDER_TYPE_BUY : ORDER_TYPE_SELL);
    string why="";
-   if(side!="BUY" && side!="SELL"){ Print("GUARDIAN reject: invalid side"); return false; }
    if(!ValidateNewOrder(slot,type,lot,sl,zone_low,zone_high,valid_until,why))
    {
       PrintFormat("GUARDIAN reject OPEN slot=%s reason=%s",slot,why);
@@ -223,16 +225,18 @@ bool OpenMarket(const string slot,const string side,const double requested_lot,c
    g_trade.SetExpertMagicNumber(InpMagicNumber);
    g_trade.SetTypeFillingBySymbol(g_symbol);
    string comment=StringFormat("GTS-%s",slot);
-   bool ok=(type==ORDER_TYPE_BUY)
+   bool basic=(type==ORDER_TYPE_BUY)
       ? g_trade.Buy(lot,g_symbol,0.0,sl,tp,comment)
       : g_trade.Sell(lot,g_symbol,0.0,sl,tp,comment);
-   if(ok)
+   uint ret=g_trade.ResultRetcode();
+   bool done=basic && (ret==TRADE_RETCODE_DONE || ret==TRADE_RETCODE_DONE_PARTIAL);
+   if(done)
    {
       SetSlotActive(slot,true);
       PrintFormat("GUARDIAN OPEN accepted slot=%s side=%s lot=%.4f reason=%s",slot,side,lot,reason);
       return true;
    }
-   PrintFormat("GUARDIAN OPEN failed slot=%s ret=%u %s",slot,g_trade.ResultRetcode(),g_trade.ResultRetcodeDescription());
+   PrintFormat("GUARDIAN OPEN failed slot=%s ret=%u %s",slot,ret,g_trade.ResultRetcodeDescription());
    return false;
 }
 
@@ -243,14 +247,34 @@ bool ModifyPositionStops(const ulong ticket,const double new_sl,const double new
    if((long)PositionGetInteger(POSITION_MAGIC)!=InpMagicNumber) return false;
    double old_sl=PositionGetDouble(POSITION_SL);
    ENUM_POSITION_TYPE type=(ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-   // Never allow AI/remote logic to widen an already-defined loss stop.
    if(old_sl>0.0)
    {
       if(type==POSITION_TYPE_BUY && new_sl<old_sl) return false;
       if(type==POSITION_TYPE_SELL && new_sl>old_sl) return false;
    }
    if(new_sl<=0.0) return false;
-   return g_trade.PositionModify(ticket,new_sl,new_tp);
+   bool basic=g_trade.PositionModify(ticket,new_sl,new_tp);
+   uint ret=g_trade.ResultRetcode();
+   return basic && ret==TRADE_RETCODE_DONE;
+}
+
+#include "GuardianIPC.mqh"
+
+void ReconcileHedgingSlots()
+{
+   ENUM_ACCOUNT_MARGIN_MODE mode=(ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE);
+   if(mode!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING) return;
+   bool a=false,b=false;
+   for(int i=0;i<PositionsTotal();i++)
+   {
+      ulong ticket=0;
+      if(!IsSystemPositionByIndex(i,ticket) || !PositionSelectByTicket(ticket)) continue;
+      string c=PositionGetString(POSITION_COMMENT);
+      if(c=="GTS-A") a=true;
+      if(c=="GTS-B") b=true;
+   }
+   SetSlotActive("A",a);
+   SetSlotActive("B",b);
 }
 
 int OnInit()
@@ -262,6 +286,9 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
    }
    g_trade.SetExpertMagicNumber(InpMagicNumber);
+   g_trade.SetMarginMode();
+   g_trade.SetTypeFillingBySymbol(g_symbol);
+   ReconcileHedgingSlots();
    EventSetMillisecondTimer(MathMax(100,InpTimerMilliseconds));
    PrintFormat("GoldTrading Guardian initialized account=%I64d symbol=%s",AccountInfoInteger(ACCOUNT_LOGIN),g_symbol);
    return INIT_SUCCEEDED;
@@ -270,18 +297,19 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
-   // Normal shutdown must NOT flatten positions. Server SL and weekend rules remain the safety baseline.
+   GuardianIpcClose();
+   // Normal shutdown does not flatten positions. Existing server SL remains active.
 }
 
 void OnTimer()
 {
    EnforceWeekendProtection();
+   GuardianIpcPoll();
 }
 
 void OnTick()
 {
-   // Trading decisions are never made from a single local indicator here.
-   // Commands from Python will call the guarded execution functions above after IPC integration.
+   // No single local indicator may open a trade. Execution arrives only through the guarded IPC path.
 }
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
