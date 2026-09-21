@@ -196,6 +196,14 @@ class TradeRecorder:
             return deal.get(name, default)
         return getattr(deal, name, default)
 
+    @classmethod
+    def _deal_int(cls, deal: Any, name: str, default: int = -1) -> int:
+        raw = cls._deal_value(deal, name, default)
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return default
+
     def _used_close_deals(self) -> set[int]:
         used: set[int] = set()
         rows = self.db.fetchall("SELECT payload FROM Trades WHERE payload IS NOT NULL")
@@ -246,7 +254,7 @@ class TradeRecorder:
         entry_epoch = entry_dt.timestamp()
         for deal in relevant:
             comment = str(self._deal_value(deal, "comment", ""))
-            entry_kind = int(self._deal_value(deal, "entry", -1) or -1)
+            entry_kind = self._deal_int(deal, "entry", -1)
             if comment != expected_comment or entry_kind not in {0, 2}:
                 continue
             t = float(self._deal_value(deal, "time", 0) or 0)
@@ -256,19 +264,19 @@ class TradeRecorder:
         if not entry_candidates:
             return False
         entry_deal = min(entry_candidates, key=lambda x: x[0])[1]
-        position_id = int(self._deal_value(entry_deal, "position_id", 0) or 0)
+        position_id = self._deal_int(entry_deal, "position_id", 0)
         if position_id <= 0:
             return False
         used = self._used_close_deals()
         exit_epoch = exit_dt.timestamp()
         close_candidates = []
         for deal in relevant:
-            if int(self._deal_value(deal, "position_id", 0) or 0) != position_id:
+            if self._deal_int(deal, "position_id", 0) != position_id:
                 continue
-            entry_kind = int(self._deal_value(deal, "entry", -1) or -1)
+            entry_kind = self._deal_int(deal, "entry", -1)
             if entry_kind not in {1, 3}:
                 continue
-            ticket = int(self._deal_value(deal, "ticket", 0) or 0)
+            ticket = self._deal_int(deal, "ticket", 0)
             if ticket <= 0 or ticket in used:
                 continue
             volume = float(self._deal_value(deal, "volume", 0.0) or 0.0)
@@ -281,7 +289,7 @@ class TradeRecorder:
         if not close_candidates:
             return False
         close_deal = min(close_candidates, key=lambda x: x[0])[1]
-        close_ticket = int(self._deal_value(close_deal, "ticket", 0) or 0)
+        close_ticket = self._deal_int(close_deal, "ticket", 0)
         exit_price = float(self._deal_value(close_deal, "price", 0.0) or 0.0)
         if close_ticket <= 0 or exit_price <= 0:
             return False
@@ -303,7 +311,7 @@ class TradeRecorder:
             {
                 "pnl_verified": "MT5_HISTORY_DEALS",
                 "broker_position_id": position_id,
-                "broker_entry_deal": int(self._deal_value(entry_deal, "ticket", 0) or 0),
+                "broker_entry_deal": self._deal_int(entry_deal, "ticket", 0),
                 "broker_close_deal": close_ticket,
             },
         )
