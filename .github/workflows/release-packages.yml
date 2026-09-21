@@ -16,9 +16,23 @@ jobs:
         run: |
           $v=(Get-Content Version/version.json -Raw | ConvertFrom-Json).version
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+      - name: Build relocatable Python runtime
+        shell: pwsh
+        run: ./Tools/build_portable_python.ps1
       - name: Build Dev and Portable ZIPs
         shell: pwsh
-        run: ./Tools/build_release.ps1 -Version '${{ steps.version.outputs.version }}'
+        run: ./Tools/build_release.ps1 -Version '${{ steps.version.outputs.version }}' -RequirePortablePython
+      - name: Verify portable runtime is inside ZIP
+        shell: pwsh
+        run: |
+          $zip=Get-ChildItem Backup/GoldTradingSystem_Portable_*.zip | Select-Object -First 1
+          if(-not $zip){ throw 'Portable ZIP missing' }
+          $dest=Join-Path $env:RUNNER_TEMP 'gts-portable-check'
+          Expand-Archive $zip.FullName $dest -Force
+          $py=Join-Path $dest 'Runtime\python\python.exe'
+          if(-not (Test-Path $py)){ throw 'Portable Python missing from delivery ZIP' }
+          & $py -c "import yaml,httpx,fastapi,uvicorn; import MetaTrader5; print('portable artifact runtime OK')"
+          if($LASTEXITCODE -ne 0){ throw 'Portable runtime dependency validation failed' }
       - name: Upload delivery artifacts
         uses: actions/upload-artifact@v4
         with:
