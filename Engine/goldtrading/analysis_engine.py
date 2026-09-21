@@ -35,6 +35,8 @@ class AnalysisEngine:
         self.last_ai_at: datetime | None = None
         self.ai_interval = float(ai_cfg.get("minimum_interval_seconds", 15))
         self.min_ai_confidence = float(ai_cfg.get("min_confidence", 0.60))
+        self.no_trade_dedupe_seconds = float(self.settings.raw.get("history", {}).get("no_trade_dedupe_seconds", 15.0))
+        self._last_no_trade: dict[str, float] = {}
 
     @staticmethod
     def _zone_dict(z: PriceZone) -> dict:
@@ -65,9 +67,19 @@ class AnalysisEngine:
             return None
 
     def _record_no_trade(self, reason: str, payload: dict | None = None) -> None:
+        encoded = json.dumps(payload or {}, ensure_ascii=False, sort_keys=True, default=str)
+        fingerprint = f"{reason}|{encoded}"
+        now_mono = time.monotonic()
+        last = self._last_no_trade.get(fingerprint)
+        if last is not None and now_mono - last < self.no_trade_dedupe_seconds:
+            return
+        self._last_no_trade[fingerprint] = now_mono
+        if len(self._last_no_trade) > 512:
+            cutoff = now_mono - max(self.no_trade_dedupe_seconds * 4.0, 60.0)
+            self._last_no_trade = {k: v for k, v in self._last_no_trade.items() if v >= cutoff}
         self.db.execute(
             "INSERT INTO NoTradeEvents(ts,reason,payload) VALUES(?,?,?)",
-            (datetime.now(timezone.utc).isoformat(), reason, json.dumps(payload or {}, ensure_ascii=False, default=str)),
+            (datetime.now(timezone.utc).isoformat(), reason, encoded),
         )
 
     def _ai_plan_to_intent(self, snapshot, payload: dict, side: str) -> TradeIntent | None:
@@ -271,12 +283,58 @@ class AnalysisEngine:
                 return
             slot = "A" if not self.runtime.logical_slot_active("A") else "B"
             mode_names = ",".join(m.mode.value for m in ready_modes)
-            command = GuardianCommand(intent.intent_id, "OPEN", slot, side, intent.lot, intent.stop_loss, intent.take_profit,
-                                      intent.zone_low, intent.zone_high, intent.valid_until, f"{mode_names}: {intent.reason}")
+            entry_reason = f"{mode_names}: {intent.reason}"
+            self.runtime.trade_recorder.note_open_ack(
+                slot=slot,
+                trade_id=intent.intent_id,
+                side=side,
+                entry_reason=entry_reason,
+                market_regime=structure2.regime.value,
+                orderflow_state=current_of.label,
+                ai_snapshot=snapshot.snapshot_id,
+                payload={
+                    "modes": [m.mode.value for m in ready_modes],
+                    "ai_confidence": result.payload.get("confidence"),
+                    "ai_reasoning_summary": result.payload.get("reasoning_summary"),
+                    "requested_zone_low": intent.zone_low,
+                    "requested_zone_high": intent.zone_high,
+                    "requested_stop_loss": intent.stop_loss,
+                    "requested_take_profit": intent.take_profit,
+                    "symbol": symbol,
+                },
+            )
+            command = GuardianCommand(
+                intent.intent_id, "OPEN", slot, side, intent.lot, intent.stop_loss, intent.take_profit,
+                intent.zone_low, intent.zone_high, intent.valid_until, entry_reason,
+            )
             accepted, guardian_reason = await self.runtime.guardian.submit(command)
-            self.db.execute("INSERT INTO SystemEvents(ts,level,component,event,payload) VALUES(?,?,?,?,?)",
-                            (datetime.now(timezone.utc).isoformat(), "INFO" if accepted else "WARNING", "Guardian", "OPEN_ACK",
-                             json.dumps({"accepted": accepted, "reason": guardian_reason, "slot": slot, "side": side, "modes": mode_names}, ensure_ascii=False)))
+            if not accepted and not self.runtime.logical_slot_active(slot):
+                await asyncio.sleep(0.25)
+                if not self.runtime.logical_slot_active(slot):
+                    self.runtime.trade_recorder.pending_open_by_slot.pop(slot, None)
+            self.db.execute(
+                "INSERT INTO SystemEvents(ts,level,component,event,payload) VALUES(?,?,?,?,?)",
+                (
+                    datetime.now(timezone.utc).isoformat(),
+                    "INFO" if accepted else "WARNING",
+                    "Guardian",
+                    "OPEN_ACK",
+                    json.dumps(
+                        {
+                            "accepted": accepted,
+                            "reason": guardian_reason,
+                            "slot": slot,
+                            "side": side,
+                            "modes": mode_names,
+                            "intent_id": intent.intent_id,
+                            "snapshot_id": snapshot.snapshot_id,
+                            "entry_reason": entry_reason,
+                            "confidence": result.payload.get("confidence"),
+                        },
+                        ensure_ascii=False,
+                    ),
+                ),
+            )
             break
 
     async def loop(self) -> None:
