@@ -61,7 +61,7 @@ bool GuardianIpcConnect()
       GuardianIpcClose(); return false;
    }
    SocketTimeouts(g_ipc_socket,50,50);
-   GuardianIpcSend(StringFormat("HELLO|%I64d|%s|%s|0.20\n",AccountInfoInteger(ACCOUNT_LOGIN),g_symbol,GuardianAccountMode()));
+   GuardianIpcSend(StringFormat("HELLO|%I64d|%s|%s|0.21\n",AccountInfoInteger(ACCOUNT_LOGIN),g_symbol,GuardianAccountMode()));
    PrintFormat("GUARDIAN IPC connected to %s:%u",InpEngineHost,InpEnginePort);
    return true;
 }
@@ -96,6 +96,11 @@ void GuardianHandleCommand(const string line)
 {
    string p[];
    int n=StringSplit(line,(ushort)StringGetCharacter("|",0),p);
+   if(n>=1 && p[0]=="STATUS")
+   {
+      GuardianHudApply(p);
+      return;
+   }
    if(n<3 || p[0]!="GTS1") return;
    string id=p[1],action=p[2];
    if(id=="") return;
