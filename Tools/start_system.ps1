@@ -15,7 +15,7 @@ function Resolve-ProjectPython {
   }
   $cmd=Get-Command python -ErrorAction SilentlyContinue
   if($cmd){ return $cmd.Source }
-  throw 'Python runtime not found. Run Start\安装到新电脑.bat first.'
+  throw 'Python runtime not found. Run the new-computer installer first.'
 }
 
 function Test-TrackedProcess($item){
@@ -38,7 +38,7 @@ if(Test-Path $pidFile){
     $old=Get-Content $pidFile -Raw | ConvertFrom-Json
     $alive=@($old.processes | Where-Object { Test-TrackedProcess $_ })
     if($alive.Count -gt 0){
-      throw 'GoldTradingSystem already has tracked local processes running. Use Start\停止系统.bat first.'
+      throw 'GoldTradingSystem already has tracked local processes running. Run the system stop script first.'
     }
   } catch {
     if($_.Exception.Message -like 'GoldTradingSystem already*'){ throw }
@@ -50,7 +50,7 @@ $py=Resolve-ProjectPython
 Push-Location $root
 try {
   & $py -c "import yaml,httpx,fastapi,uvicorn" *> $null
-  if($LASTEXITCODE -ne 0){ throw 'Python dependencies are incomplete. Run Start\安装到新电脑.bat first.' }
+  if($LASTEXITCODE -ne 0){ throw 'Python dependencies are incomplete. Run the new-computer installer first.' }
 
   $uiRaw=& $py -c "import json; from Engine.goldtrading.config import load_settings; s=load_settings(); print(json.dumps({'host':s.raw['ui']['host'],'port':int(s.raw['ui']['port'])}))"
   if($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($uiRaw)){ throw 'Unable to load UI configuration.' }
