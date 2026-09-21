@@ -50,7 +50,6 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def _safe_secret_status(path: Path) -> dict[str, Any]:
-    # Never return secret values or full secret file contents.
     if not path.exists():
         return {"exists": False, "api_key_present": False}
     present = False
@@ -85,7 +84,7 @@ def _binding_status() -> dict[str, Any]:
         except OSError:
             atas_dll_exists = False
 
-    # No machine paths are returned here. The report is safe to share for support.
+    # Deliberately omit all machine paths from the support-safe report.
     return {
         "mt5": {
             "record_exists": bool(mt5),
@@ -111,7 +110,7 @@ def _candidate_paths() -> dict[str, list[str]]:
 
     roots = [
         Path(os.environ.get("PROGRAMFILES", "C:/Program Files")),
-        Path(os.environ.get("PROGRAMFILES(X86", "C:/Program Files (x86)")),
+        Path(os.environ.get("PROGRAMFILES(X86)", "C:/Program Files (x86)")),
         Path(os.environ.get("LOCALAPPDATA", "")),
     ]
     for base in roots:
@@ -166,7 +165,6 @@ def _probe_mt5() -> dict[str, Any]:
             result["account_present"] = True
             demo_const = getattr(mt5, "ACCOUNT_TRADE_MODE_DEMO", 0)
             result["demo_account"] = getattr(account, "trade_mode", None) == demo_const
-            # Login/server are intentionally not included in the report.
     except Exception as exc:
         result["error"] = f"MT5 probe failed: {type(exc).__name__}"
     finally:
