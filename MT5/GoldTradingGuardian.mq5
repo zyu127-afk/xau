@@ -1,5 +1,5 @@
 #property strict
-#property version   "0.11"
+#property version   "0.20"
 #property description "GoldTradingSystem Guardian - final local execution and risk authority"
 #property description "IPC requires the local engine address to be allowed in MT5 Expert Advisors network settings."
 
@@ -210,10 +210,24 @@ bool ValidateNewOrder(const string slot,const ENUM_ORDER_TYPE type,const double 
    return true;
 }
 
+bool PositionHasServerStopForSlot(const string slot)
+{
+   ENUM_ACCOUNT_MARGIN_MODE mode=(ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE);
+   for(int i=0;i<PositionsTotal();i++)
+   {
+      ulong ticket=0;
+      if(!IsSystemPositionByIndex(i,ticket) || !PositionSelectByTicket(ticket)) continue;
+      if(mode==ACCOUNT_MARGIN_MODE_RETAIL_HEDGING && PositionGetString(POSITION_COMMENT)!=StringFormat("GTS-%s",slot)) continue;
+      if(PositionGetDouble(POSITION_SL)>0.0) return true;
+   }
+   return false;
+}
+
 bool OpenMarket(const string slot,const string side,const double requested_lot,const double sl,const double tp,
                 const double zone_low,const double zone_high,const datetime valid_until,const string reason)
 {
    if(side!="BUY" && side!="SELL"){ Print("GUARDIAN reject: invalid side"); return false; }
+   if(!ExistingNettingSideCompatible(side)){ Print("GUARDIAN reject: opposite logical directions are not representable on netting accounts"); return false; }
    double lot=NormalizeLot(requested_lot);
    ENUM_ORDER_TYPE type=(side=="BUY" ? ORDER_TYPE_BUY : ORDER_TYPE_SELL);
    string why="";
@@ -232,7 +246,13 @@ bool OpenMarket(const string slot,const string side,const double requested_lot,c
    bool done=basic && (ret==TRADE_RETCODE_DONE || ret==TRADE_RETCODE_DONE_PARTIAL);
    if(done)
    {
-      SetSlotActive(slot,true);
+      CaptureSlotAfterOpen(slot,side,lot,sl,tp);
+      if(!PositionHasServerStopForSlot(slot))
+      {
+         PrintFormat("GUARDIAN HARD FAIL: opened slot=%s without visible server SL; closing immediately",slot);
+         CloseLogicalSlot(slot,"server SL verification failed");
+         return false;
+      }
       PrintFormat("GUARDIAN OPEN accepted slot=%s side=%s lot=%.4f reason=%s",slot,side,lot,reason);
       return true;
    }
@@ -258,6 +278,8 @@ bool ModifyPositionStops(const ulong ticket,const double new_sl,const double new
    return basic && ret==TRADE_RETCODE_DONE;
 }
 
+ulong GuardianFindPositionTicket(const string slot);
+#include "GuardianState.mqh"
 #include "GuardianIPC.mqh"
 
 void ReconcileHedgingSlots()
@@ -288,7 +310,9 @@ int OnInit()
    g_trade.SetExpertMagicNumber(InpMagicNumber);
    g_trade.SetMarginMode();
    g_trade.SetTypeFillingBySymbol(g_symbol);
+   LoadLogicalState();
    ReconcileHedgingSlots();
+   ReconcileSlotStateWithBroker();
    EventSetMillisecondTimer(MathMax(100,InpTimerMilliseconds));
    PrintFormat("GoldTrading Guardian initialized account=%I64d symbol=%s",AccountInfoInteger(ACCOUNT_LOGIN),g_symbol);
    return INIT_SUCCEEDED;
@@ -298,22 +322,24 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
    GuardianIpcClose();
-   // Normal shutdown does not flatten positions. Existing server SL remains active.
 }
 
 void OnTimer()
 {
    EnforceWeekendProtection();
+   ReconcileSlotStateWithBroker();
    GuardianIpcPoll();
 }
 
 void OnTick()
 {
-   // No single local indicator may open a trade. Execution arrives only through the guarded IPC path.
+   UpdateSlotExcursions();
+   EnforceLogicalStops();
 }
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
 {
    if(trans.symbol!=g_symbol) return;
+   ReconcileSlotStateWithBroker();
    PrintFormat("GUARDIAN tx type=%d order=%I64u deal=%I64u ret=%u",trans.type,trans.order,trans.deal,result.retcode);
 }
