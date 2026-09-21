@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import shutil
 import tempfile
 import zipfile
 from datetime import datetime, timezone
@@ -19,6 +18,10 @@ _PATTERNS = [
     (re.compile(r"(?i)(secret\s*[=:]\s*)[^\s\"']+"), r"\1***REDACTED***"),
     (re.compile(r"(?i)(token\s*[=:]\s*)[^\s\"']+"), r"\1***REDACTED***"),
     (re.compile(r"\bsk-[A-Za-z0-9_-]{8,}\b"), "***REDACTED***"),
+    (re.compile(r"(?i)\b((?:account(?:_login)?|login)\s*[=:]\s*)\d{4,}\b"), r"\1***REDACTED***"),
+    # Support bundles can be shared. Remove machine-specific absolute Windows paths
+    # from logs instead of exposing user names, drive layout or terminal locations.
+    (re.compile(r"(?i)\b[A-Z]:\\(?:[^\s\"'<>|]+\\)*[^\s\"'<>|]*"), "***LOCAL_PATH***"),
 ]
 
 
@@ -47,10 +50,12 @@ def build(max_log_bytes: int = 1_000_000) -> Path:
         stage = Path(tmp) / "GoldTradingSystem_Diagnostics"
         stage.mkdir(parents=True)
 
+        # paths.yaml and process/binding files are intentionally excluded because
+        # they contain machine-local paths/PIDs. The acceptance report is already
+        # designed to expose only sanitized booleans/framework state.
         safe_files = [
             ROOT / "Version" / "version.json",
             ROOT / "Config" / "config.example.yaml",
-            ROOT / "Config" / "paths.yaml",
             RUNTIME / "acceptance-report.json",
         ]
         for src in safe_files:
@@ -75,8 +80,12 @@ def build(max_log_bytes: int = 1_000_000) -> Path:
         manifest = {
             "generated_at_utc": datetime.now(timezone.utc).isoformat(),
             "redacted": True,
-            "excluded": ["Config/secrets.local", ".env", "API keys/tokens", "Data/*.db", "Backup/*"],
-            "note": "This archive is for support diagnostics. It intentionally excludes credentials and trading databases.",
+            "excluded": [
+                "Config/secrets.local", "Config/paths.yaml", ".env", "API keys/tokens",
+                "MT5 account/login identifiers", "machine-local absolute paths",
+                "Runtime/processes.json", "Runtime/*-binding.json", "Data/*.db", "Backup/*",
+            ],
+            "note": "This archive is for support diagnostics. It intentionally excludes credentials, account identifiers, machine paths and trading databases.",
         }
         (stage / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
 
