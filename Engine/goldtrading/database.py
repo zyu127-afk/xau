@@ -46,6 +46,10 @@ CREATE TABLE IF NOT EXISTS SystemEvents(
 CREATE TABLE IF NOT EXISTS DailyReviews(
   day TEXT PRIMARY KEY, payload TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ReviewSummaries(
+  review_key TEXT PRIMARY KEY, period TEXT NOT NULL,
+  start_ts TEXT NOT NULL, end_ts TEXT NOT NULL, payload TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS Versions(
   version TEXT PRIMARY KEY, build_date TEXT, payload TEXT
 );
@@ -56,6 +60,7 @@ CREATE INDEX IF NOT EXISTS idx_ai_ts ON AIAnalysis(ts);
 CREATE INDEX IF NOT EXISTS idx_notrade_ts ON NoTradeEvents(ts);
 CREATE INDEX IF NOT EXISTS idx_position_ts ON PositionEvents(ts);
 CREATE INDEX IF NOT EXISTS idx_system_ts ON SystemEvents(ts);
+CREATE INDEX IF NOT EXISTS idx_reviews_period ON ReviewSummaries(period,start_ts);
 """
 
 
