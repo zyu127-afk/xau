@@ -111,6 +111,11 @@ def validate_raw_config(raw: dict[str, Any]) -> None:
 
     for name in ("engine", "mt5", "atas", "ui"):
         _loopback(raw[name], name)
+    # The current Dashboard publisher/client pair intentionally uses one canonical IPv4
+    # loopback endpoint. Reject aliases here instead of accepting a value the runtime
+    # would silently ignore and then failing later at startup.
+    if str(raw["ui"].get("host", "")).strip() != "127.0.0.1":
+        raise ConfigValidationError("V1 requires ui.host=127.0.0.1")
     if raw["atas"].get("require_mbo") not in (True, False):
         raise ConfigValidationError("atas.require_mbo must be boolean")
     if raw["mt5"].get("python_data_adapter") not in (True, False):
