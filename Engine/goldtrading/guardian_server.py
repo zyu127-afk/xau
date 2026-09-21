@@ -83,7 +83,6 @@ class GuardianServer:
         self.state.connected = False
 
     def _parse_slot_v20(self, parts: list[str], start: int, prefix: str) -> None:
-        # active, side, lot, entry, original_sl, current_sl, tp, entry_time, mfe, mae
         if len(parts) < start + 10:
             return
         try:
@@ -101,7 +100,6 @@ class GuardianServer:
             return
 
     def _parse_slot_legacy(self, parts: list[str], start: int, prefix: str) -> None:
-        # v0.20 pre-original-SL shape: active, side, lot, entry, sl, tp, entry_time, mfe, mae
         if len(parts) < start + 9:
             return
         try:
@@ -147,13 +145,13 @@ class GuardianServer:
                         self.state.positions = int(parts[5]); self.state.orders = int(parts[6]); self.state.weekend_protection = parts[7] == "1"
                     except (TypeError, ValueError):
                         continue
-                    if len(parts) >= 28:  # current full slot payload
+                    if len(parts) >= 28:
                         self._parse_slot_v20(parts, 8, "slot_a_")
                         self._parse_slot_v20(parts, 18, "slot_b_")
-                    elif len(parts) >= 26:  # early full-slot payload
+                    elif len(parts) >= 26:
                         self._parse_slot_legacy(parts, 8, "slot_a_")
                         self._parse_slot_legacy(parts, 17, "slot_b_")
-                    elif len(parts) >= 10:  # legacy active flags only
+                    elif len(parts) >= 10:
                         self.state.slot_a_active = parts[8] == "1"
                         self.state.slot_b_active = parts[9] == "1"
                 elif kind == "ACK" and len(parts) >= 4:
@@ -175,6 +173,24 @@ class GuardianServer:
                 await writer.wait_closed()
             except ConnectionError:
                 pass
+
+    @staticmethod
+    def _clean_status_field(value: object) -> str:
+        text = "" if value is None else str(value)
+        return text.replace("|", "/").replace("\r", " ").replace("\n", " ")[:220]
+
+    async def publish_status(self, fields: list[object]) -> bool:
+        writer = self._writer
+        if writer is None or writer.is_closing() or not self.state.connected:
+            return False
+        line = "STATUS|" + "|".join(self._clean_status_field(x) for x in fields) + "\n"
+        try:
+            async with self._write_lock:
+                writer.write(line.encode("utf-8"))
+                await writer.drain()
+            return True
+        except ConnectionError:
+            return False
 
     async def submit(self, command: GuardianCommand, timeout: float = 3.0) -> tuple[bool, str]:
         writer = self._writer
