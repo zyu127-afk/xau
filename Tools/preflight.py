@@ -139,10 +139,13 @@ def run(probe_mt5: bool = False) -> dict[str, Any]:
     ports = {
         "engine": int(engine.get("port", 17832)),
         "atas": int(atas.get("port", 17831)),
-        "ui": int(ui.get("port", 17833)),
+        "ui": int(ui.get("port", 17840)),
     }
     required = [
-        "MT5/Guardian/GoldTradingGuardian.mq5",
+        "MT5/GoldTradingGuardian.mq5",
+        "MT5/GuardianIPC.mqh",
+        "MT5/GuardianState.mqh",
+        "MT5/GuardianHUD.mqh",
         "Engine",
         "ATAS",
         "UI",
