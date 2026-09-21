@@ -142,6 +142,20 @@ bool CloseLogicalSlot(const string slot,const string reason)
    return ok;
 }
 
+double NettingFailSafeStop(const string side,const int changing_index,const double proposed_sl)
+{
+   double hard_sl=proposed_sl;
+   for(int j=0;j<2;j++)
+   {
+      if(j==changing_index || !g_slot_active[j] || g_slot_sl[j]<=0.0) continue;
+      // A single net position cannot carry two server stops. Use the MORE protective stop,
+      // never the wider one: BUY => higher SL, SELL => lower SL.
+      if(side=="BUY") hard_sl=MathMax(hard_sl,g_slot_sl[j]);
+      else hard_sl=MathMin(hard_sl,g_slot_sl[j]);
+   }
+   return hard_sl;
+}
+
 bool ModifyLogicalStops(const string slot,const double new_sl,const double new_tp)
 {
    int i=SlotIndex(slot); if(i<0 || !g_slot_active[i] || new_sl<=0.0) return false;
@@ -150,18 +164,22 @@ bool ModifyLogicalStops(const string slot,const double new_sl,const double new_t
       if(g_slot_side[i]=="BUY" && new_sl<g_slot_sl[i]) return false;
       if(g_slot_side[i]=="SELL" && new_sl>g_slot_sl[i]) return false;
    }
-   g_slot_sl[i]=new_sl; g_slot_tp[i]=new_tp; SaveSlot(slot);
    ENUM_ACCOUNT_MARGIN_MODE mode=(ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE);
    ulong ticket=GuardianFindPositionTicket(slot);
    if(ticket==0) return false;
-   if(mode==ACCOUNT_MARGIN_MODE_RETAIL_HEDGING) return ModifyPositionStops(ticket,new_sl,new_tp);
-   double hard_sl=new_sl;
-   if(g_slot_active[0] && g_slot_active[1])
+   double server_sl=new_sl;
+   double server_tp=new_tp;
+   if(mode!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING)
    {
-      if(g_slot_side[i]=="BUY") hard_sl=MathMin(g_slot_sl[0],g_slot_sl[1]);
-      else hard_sl=MathMax(g_slot_sl[0],g_slot_sl[1]);
+      server_sl=NettingFailSafeStop(g_slot_side[i],i,new_sl);
+      server_tp=0.0; // per-slot TP is locally enforced for a net position.
    }
-   return ModifyPositionStops(ticket,hard_sl,0.0);
+   if(!ModifyPositionStops(ticket,server_sl,server_tp)) return false;
+   // Commit logical state only after broker/server modification succeeded.
+   g_slot_sl[i]=new_sl;
+   g_slot_tp[i]=new_tp;
+   SaveSlot(slot);
+   return true;
 }
 
 void EnforceLogicalStops()
@@ -169,10 +187,18 @@ void EnforceLogicalStops()
    MqlTick tick; if(!SymbolInfoTick(g_symbol,tick)) return;
    for(int i=0;i<2;i++)
    {
-      if(!g_slot_active[i] || g_slot_sl[i]<=0.0) continue;
+      if(!g_slot_active[i]) continue;
       double px=(g_slot_side[i]=="BUY"?tick.bid:tick.ask);
-      bool hit=(g_slot_side[i]=="BUY"?px<=g_slot_sl[i]:px>=g_slot_sl[i]);
-      if(hit) CloseLogicalSlot(SlotName(i),"logical stop hit");
+      if(g_slot_sl[i]>0.0)
+      {
+         bool sl_hit=(g_slot_side[i]=="BUY"?px<=g_slot_sl[i]:px>=g_slot_sl[i]);
+         if(sl_hit){ CloseLogicalSlot(SlotName(i),"logical stop hit"); continue; }
+      }
+      if(g_slot_tp[i]>0.0)
+      {
+         bool tp_hit=(g_slot_side[i]=="BUY"?px>=g_slot_tp[i]:px<=g_slot_tp[i]);
+         if(tp_hit) CloseLogicalSlot(SlotName(i),"logical take profit hit");
+      }
    }
 }
 
