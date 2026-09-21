@@ -14,11 +14,7 @@ double   g_slot_mae[2];
 
 int SlotIndex(const string slot){ if(slot=="A") return 0; if(slot=="B") return 1; return -1; }
 string SlotName(const int i){ return i==0?"A":"B"; }
-
-string StateKey(const string slot,const string field)
-{
-   return StringFormat("GTS_STATE_%I64d_%s_%s_%s",AccountInfoInteger(ACCOUNT_LOGIN),g_symbol,slot,field);
-}
+string StateKey(const string slot,const string field){ return StringFormat("GTS_STATE_%I64d_%s_%s_%s",AccountInfoInteger(ACCOUNT_LOGIN),g_symbol,slot,field); }
 
 void ResetSlotIndex(const int i)
 {
@@ -71,12 +67,7 @@ ulong GuardianHashCommand(const string value)
    for(int i=0;i<StringLen(value);i++){ h^=(ulong)StringGetCharacter(value,i); h*=1099511628211; }
    return h;
 }
-
-string CommandKey(const string id)
-{
-   return StringFormat("GTS_CMD_%I64d_%s_%I64u",AccountInfoInteger(ACCOUNT_LOGIN),g_symbol,GuardianHashCommand(id));
-}
-
+string CommandKey(const string id){ return StringFormat("GTS_CMD_%I64d_%s_%I64u",AccountInfoInteger(ACCOUNT_LOGIN),g_symbol,GuardianHashCommand(id)); }
 bool CommandAlreadyProcessed(const string id){ return GlobalVariableCheck(CommandKey(id)); }
 void MarkCommandProcessed(const string id,const bool ok){ GlobalVariableSet(CommandKey(id),ok?1.0:-1.0); }
 
@@ -202,9 +193,9 @@ void ReconcileSlotStateWithBroker()
 
 string SlotWire(const string slot)
 {
-   int i=SlotIndex(slot); if(i<0) return "0||0|0|0|0|0|0|0";
-   return StringFormat("%d|%s|%.8f|%.10f|%.10f|%.10f|%I64d|%.10f|%.10f",
-      (g_slot_active[i]?1:0),g_slot_side[i],g_slot_lot[i],g_slot_entry[i],g_slot_sl[i],g_slot_tp[i],(long)g_slot_time[i],g_slot_mfe[i],g_slot_mae[i]);
+   int i=SlotIndex(slot); if(i<0) return "0||0|0|0|0|0|0|0|0";
+   return StringFormat("%d|%s|%.8f|%.10f|%.10f|%.10f|%.10f|%I64d|%.10f|%.10f",
+      (g_slot_active[i]?1:0),g_slot_side[i],g_slot_lot[i],g_slot_entry[i],g_slot_original_sl[i],g_slot_sl[i],g_slot_tp[i],(long)g_slot_time[i],g_slot_mfe[i],g_slot_mae[i]);
 }
 
 #endif
