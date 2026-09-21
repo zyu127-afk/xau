@@ -45,11 +45,24 @@ if($mt5.Count -gt 1){
 $selected=$mt5[$choice-1]
 
 $atasRaw=@()
-if($env:LOCALAPPDATA){$atasRaw += (Join-Path $env:LOCALAPPDATA 'ATAS Platform')}
-if($env:APPDATA){$atasRaw += (Join-Path $env:APPDATA 'ATAS Platform')}
-if($env:ProgramFiles){$atasRaw += (Join-Path $env:ProgramFiles 'ATAS Platform')}
+if($env:LOCALAPPDATA){
+  $atasRaw += (Join-Path $env:LOCALAPPDATA 'ATAS')
+  $atasRaw += (Join-Path $env:LOCALAPPDATA 'ATAS Platform')
+  $atasRaw += (Join-Path $env:LOCALAPPDATA 'Programs\ATAS')
+}
+if($env:APPDATA){
+  $atasRaw += (Join-Path $env:APPDATA 'ATAS')
+  $atasRaw += (Join-Path $env:APPDATA 'ATAS Platform')
+}
+if($env:ProgramFiles){
+  $atasRaw += (Join-Path $env:ProgramFiles 'ATAS')
+  $atasRaw += (Join-Path $env:ProgramFiles 'ATAS Platform')
+}
 $pf86=[Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
-if($pf86){$atasRaw += (Join-Path $pf86 'ATAS Platform')}
+if($pf86){
+  $atasRaw += (Join-Path $pf86 'ATAS')
+  $atasRaw += (Join-Path $pf86 'ATAS Platform')
+}
 $atasCandidates=@($atasRaw | Where-Object {$_ -and (Test-Path $_)} | Select-Object -Unique)
 $atasPath=''
 if($atasCandidates.Count -gt 0){
@@ -64,6 +77,7 @@ if($atasCandidates.Count -gt 0){
 } else {
   Write-Warning '未自动检测到 ATAS。稍后可手工填写 Config/paths.yaml；这不会阻止 Guardian 本地保护。'
 }
+$atasTarget=if($env:APPDATA){ Join-Path $env:APPDATA 'ATAS\Indicators' } else { '' }
 
 function YamlQuote([string]$v){
   if($null -eq $v){$v=''}
@@ -77,12 +91,23 @@ mt5:
   metaeditor_path: $(YamlQuote $selected.MetaEditor)
 atas:
   install_path: $(YamlQuote $atasPath)
-  bridge_target_path: ""
+  bridge_target_path: $(YamlQuote $atasTarget)
 "@
 Set-Content -Path (Join-Path $configDir 'paths.yaml') -Value $paths -Encoding UTF8
 Write-Host '[Config] 已写入 Config/paths.yaml'
 
 & (Join-Path $PSScriptRoot 'deploy_mt5.ps1') -TerminalDataPath $selected.DataPath -MetaEditorPath $selected.MetaEditor
+
+$atasBound=$false
+if(-not [string]::IsNullOrWhiteSpace($atasPath)){
+  try {
+    & (Join-Path $PSScriptRoot 'deploy_atas.ps1') -AtasInstallPath $atasPath -TargetPath $atasTarget
+    $atasBound=($LASTEXITCODE -eq 0)
+  } catch {
+    Write-Warning ("ATAS SDK 自动绑定暂未完成: " + $_.Exception.Message)
+    Write-Warning '安装器继续；Guardian/Python 可先准备。最终验收前必须让 ATAS SDK Bridge 本机编译并加载成功。'
+  }
+}
 
 $py=Get-ProjectPython
 if($py){
@@ -104,4 +129,9 @@ if($py){
 }
 
 Write-Host "`n=== 仓库侧自动安装步骤完成 ===" -ForegroundColor Green
-Write-Host '仍需实机完成：ATAS SDK DataBridge 编译/加载、Rithmic Paper 连接、MT5 允许 127.0.0.1 Socket、模拟盘验收。'
+if($atasBound){
+  Write-Host '[ATAS] SDK Bridge 已针对本机 ATAS 程序集编译并部署。' -ForegroundColor Green
+} else {
+  Write-Warning '[ATAS] SDK Bridge 仍需在本机完成编译/加载验证。'
+}
+Write-Host '最终仍需实机完成：Rithmic Paper 连接、MT5 允许 127.0.0.1 Socket、ATAS 图表加载 Bridge、模拟盘开平仓/断线/周末验收。'
