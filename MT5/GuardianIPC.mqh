@@ -20,14 +20,14 @@ string GuardianAccountMode()
 int GuardianSystemPositionCount()
 {
    int n=0;
-   for(int i=0;i<PositionsTotal();i++) { ulong ticket=0; if(IsSystemPositionByIndex(i,ticket)) n++; }
+   for(int i=0;i<PositionsTotal();i++){ ulong ticket=0; if(IsSystemPositionByIndex(i,ticket)) n++; }
    return n;
 }
 
 int GuardianSystemOrderCount()
 {
    int n=0;
-   for(int i=0;i<OrdersTotal();i++) { ulong ticket=0; if(IsSystemOrderByIndex(i,ticket)) n++; }
+   for(int i=0;i<OrdersTotal();i++){ ulong ticket=0; if(IsSystemOrderByIndex(i,ticket)) n++; }
    return n;
 }
 
@@ -61,7 +61,7 @@ bool GuardianIpcConnect()
       GuardianIpcClose(); return false;
    }
    SocketTimeouts(g_ipc_socket,50,50);
-   GuardianIpcSend(StringFormat("HELLO|%I64d|%s|%s|0.11\n",AccountInfoInteger(ACCOUNT_LOGIN),g_symbol,GuardianAccountMode()));
+   GuardianIpcSend(StringFormat("HELLO|%I64d|%s|%s|0.20\n",AccountInfoInteger(ACCOUNT_LOGIN),g_symbol,GuardianAccountMode()));
    PrintFormat("GUARDIAN IPC connected to %s:%u",InpEngineHost,InpEnginePort);
    return true;
 }
@@ -70,7 +70,7 @@ void GuardianIpcAck(const string command_id,const bool ok,const string reason)
 {
    string clean=reason;
    StringReplace(clean,"|","/"); StringReplace(clean,"\r"," "); StringReplace(clean,"\n"," ");
-   GuardianIpcSend(StringFormat("ACK|%s|%s|%s\n",command_id,(ok ? "OK" : "REJECT"),clean));
+   GuardianIpcSend(StringFormat("ACK|%s|%s|%s\n",command_id,(ok?"OK":"REJECT"),clean));
 }
 
 ulong GuardianFindPositionTicket(const string slot)
@@ -86,38 +86,64 @@ ulong GuardianFindPositionTicket(const string slot)
    return 0;
 }
 
+void GuardianFinishCommand(const string id,const bool ok,const string reason)
+{
+   MarkCommandProcessed(id,ok);
+   GuardianIpcAck(id,ok,reason);
+}
+
 void GuardianHandleCommand(const string line)
 {
    string p[];
    int n=StringSplit(line,(ushort)StringGetCharacter("|",0),p);
    if(n<3 || p[0]!="GTS1") return;
    string id=p[1],action=p[2];
+   if(id=="") return;
+   if(CommandAlreadyProcessed(id))
+   {
+      GuardianIpcAck(id,true,"duplicate command already processed");
+      return;
+   }
    if(action=="CLOSE_ALL")
    {
-      CancelAllSystemOrders(); CloseAllSystemPositions();
-      GuardianIpcAck(id,true,"closed all system exposure"); return;
+      CancelAllSystemOrders(); CloseAllSystemPositions(); ReconcileSlotStateWithBroker();
+      GuardianFinishCommand(id,true,"closed all system exposure"); return;
    }
-   if(n<12){ GuardianIpcAck(id,false,"malformed command"); return; }
+   if(action=="CANCEL_ALL")
+   {
+      CancelAllSystemOrders(); GuardianFinishCommand(id,true,"cancelled all system orders"); return;
+   }
+   if(n<12){ GuardianFinishCommand(id,false,"malformed command"); return; }
    string slot=p[3],side=p[4];
    double lot=StringToDouble(p[5]),sl=StringToDouble(p[6]);
-   double tp=(p[7]=="" ? 0.0 : StringToDouble(p[7]));
+   double tp=(p[7]==""?0.0:StringToDouble(p[7]));
    double zone_low=StringToDouble(p[8]),zone_high=StringToDouble(p[9]);
    datetime valid_until=(datetime)(long)StringToInteger(p[10]);
    string reason=p[11];
+   if(TimeTradeServer()>valid_until){ GuardianFinishCommand(id,false,"command expired"); return; }
    if(action=="OPEN")
    {
       bool ok=OpenMarket(slot,side,lot,sl,tp,zone_low,zone_high,valid_until,reason);
-      GuardianIpcAck(id,ok,(ok ? "open accepted" : "open rejected by local checks")); return;
+      GuardianFinishCommand(id,ok,(ok?"open accepted":"open rejected by local checks")); return;
    }
-   if(action=="MODIFY_SL")
+   if(action=="CLOSE")
    {
-      if(TimeTradeServer()>valid_until){ GuardianIpcAck(id,false,"command expired"); return; }
-      ulong ticket=GuardianFindPositionTicket(slot);
-      if(ticket==0){ GuardianIpcAck(id,false,"position not found"); return; }
-      bool ok=ModifyPositionStops(ticket,sl,tp);
-      GuardianIpcAck(id,ok,(ok ? "stops modified" : "stop modification rejected")); return;
+      bool ok=CloseLogicalSlot(slot,reason);
+      GuardianFinishCommand(id,ok,(ok?"slot closed":"slot close failed")); return;
    }
-   GuardianIpcAck(id,false,"unsupported action");
+   if(action=="MODIFY_SL" || action=="MODIFY_STOPS")
+   {
+      bool ok=ModifyLogicalStops(slot,sl,tp);
+      GuardianFinishCommand(id,ok,(ok?"stops modified":"stop modification rejected")); return;
+   }
+   if(action=="MODIFY_TP")
+   {
+      int i=SlotIndex(slot);
+      if(i<0 || !g_slot_active[i]){ GuardianFinishCommand(id,false,"position not found"); return; }
+      bool ok=ModifyLogicalStops(slot,g_slot_sl[i],tp);
+      GuardianFinishCommand(id,ok,(ok?"take profit modified":"take profit modification rejected")); return;
+   }
+   GuardianFinishCommand(id,false,"unsupported action");
 }
 
 void GuardianIpcRead()
@@ -152,10 +178,11 @@ void GuardianIpcHeartbeat()
    MqlTick tick;
    if(!SymbolInfoTick(g_symbol,tick)) return;
    double point=SymbolInfoDouble(g_symbol,SYMBOL_POINT);
-   double spread=(point>0 ? (tick.ask-tick.bid)/point : 0.0);
-   GuardianIpcSend(StringFormat("HB|%I64d|%.10f|%.10f|%.2f|%d|%d|%d|%d|%d\n",
+   double spread=(point>0?(tick.ask-tick.bid)/point:0.0);
+   string text=StringFormat("HB|%I64d|%.10f|%.10f|%.2f|%d|%d|%d|%s|%s\n",
       (long)TimeTradeServer(),tick.bid,tick.ask,spread,GuardianSystemPositionCount(),GuardianSystemOrderCount(),
-      (g_weekend_protection ? 1 : 0),(SlotActive("A") ? 1 : 0),(SlotActive("B") ? 1 : 0)));
+      (g_weekend_protection?1:0),SlotWire("A"),SlotWire("B"));
+   GuardianIpcSend(text);
 }
 
 void GuardianIpcPoll()
