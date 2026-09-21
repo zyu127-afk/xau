@@ -18,6 +18,20 @@ foreach($name in @('GoldTradingGuardian.mq5','GuardianIPC.mqh','GuardianState.mq
 }
 Write-Host "[MT5] Guardian source deployed to $experts"
 
+function Show-CompileSummary([string]$LogPath){
+  if(-not $LogPath -or -not (Test-Path $LogPath)){
+    Write-Warning '[MT5] MetaEditor compile log was not created.'
+    return
+  }
+  Write-Host '[MT5] MetaEditor compile summary:' -ForegroundColor Yellow
+  $hits=Select-String -Path $LogPath -Pattern 'error|warning|result' -CaseSensitive:$false -ErrorAction SilentlyContinue
+  if($hits){
+    $hits | Select-Object -Last 20 | ForEach-Object { Write-Host ('  ' + $_.Line) }
+  } else {
+    Get-Content $LogPath -Tail 20 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('  ' + $_) }
+  }
+}
+
 $compiled=$false
 $compileAttempted=$false
 $compileLog=''
@@ -27,13 +41,16 @@ if(-not $SkipCompile){
     $source=Join-Path $experts 'GoldTradingGuardian.mq5'
     $compileLog=Join-Path $root 'Logs\mt5_compile.log'
     New-Item -ItemType Directory -Force -Path (Split-Path $compileLog) | Out-Null
+    Remove-Item $compileLog -Force -ErrorAction SilentlyContinue
     & $MetaEditorPath "/compile:$source" "/log:$compileLog"
     Start-Sleep -Milliseconds 750
     $compiled=Test-Path (Join-Path $experts 'GoldTradingGuardian.ex5')
     if($compiled){
       Write-Host '[MT5] GoldTradingGuardian.ex5 compiled successfully.' -ForegroundColor Green
     } else {
-      Write-Warning "MetaEditor did not produce EX5. Inspect $compileLog and compile manually in the selected MT5 MetaEditor."
+      Write-Warning 'MetaEditor did not produce EX5.'
+      Show-CompileSummary $compileLog
+      Write-Warning "Full compile log: $compileLog"
     }
   } else {
     Write-Warning 'MetaEditor path was not resolved. Source is deployed; compile GoldTradingGuardian.mq5 manually in the selected MT5 MetaEditor.'
