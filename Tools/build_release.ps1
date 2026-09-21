@@ -25,6 +25,7 @@ function Remove-MachineState([string]$Dest){
     'Runtime\acceptance-report.json',
     'Runtime\atas-binding.json',
     'Runtime\mt5-binding.json',
+    'Runtime\processes.json',
     'Runtime\diagnostics'
   )
   foreach($rel in $sensitive){
@@ -115,9 +116,10 @@ GoldTradingSystem Portable $Version
 2. 双击 Start\安装到新电脑.bat：检测/选择 MT5、准备配置、部署/编译 Guardian，并在检测到 ATAS 时尝试针对本机 SDK 编译/部署 Bridge。
 3. 按 Docs\MANUAL_SETUP.md 完成 MT5 Socket、ATAS 图表加载、Rithmic Paper、DeepSeek 与模拟盘实机步骤。
 4. 先运行 Start\本机验收.bat，再运行 Start\启动系统.bat。
+5. 正常结束时双击 Start\停止系统.bat；它只停止本系统记录的 Engine/Dashboard，不自动平掉 MT5 仓位。
 
 $runtimeLine
-Portable 包不包含真实 API Key、个人路径、数据库、日志、绑定状态或验收/诊断数据。
+Portable 包不包含真实 API Key、个人路径、数据库、日志、绑定状态、进程状态或验收/诊断数据。
 BUILD_INFO.json 记录版本、构建提交与是否内嵌 Python，便于追溯交付物。
 "@
 Set-Content -Path (Join-Path $portableStage 'PORTABLE_README.txt') -Value $note -Encoding UTF8
