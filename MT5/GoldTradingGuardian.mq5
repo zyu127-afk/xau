@@ -211,6 +211,12 @@ bool ValidateNewOrder(const string slot,const ENUM_ORDER_TYPE type,const double 
    return true;
 }
 
+bool ExistingNettingSideCompatible(const string side);
+void CaptureSlotAfterOpen(const string slot,const string side,const double lot,const double sl,const double tp);
+bool CloseLogicalSlot(const string slot,const string reason);
+bool ModifyLogicalStops(const string slot,const double new_sl,const double new_tp);
+ulnumber GuardianFindPositionTicket(const string slot);
+
 bool PositionHasServerStopForSlot(const string slot)
 {
    ENUM_ACCOUNT_MARGIN_MODE mode=(ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE);
@@ -248,9 +254,9 @@ bool OpenMarket(const string slot,const string side,const double requested_lot,c
    if(done)
    {
       CaptureSlotAfterOpen(slot,side,lot,sl,tp);
-      if(!PositionHasServerStopForSlot(slot))
+      if(!PositionHasServerStopForSlot(slot) || !ModifyLogicalStops(slot,sl,tp))
       {
-         PrintFormat("GUARDIAN HARD FAIL: opened slot=%s without visible server SL; closing immediately",slot);
+         PrintFormat("GUARDIAN HARD FAIL: server protection verification/hardening failed slot=%s; closing immediately",slot);
          CloseLogicalSlot(slot,"server SL verification failed");
          return false;
       }
@@ -267,6 +273,7 @@ bool ModifyPositionStops(const ulong ticket,const double new_sl,const double new
    if(PositionGetString(POSITION_SYMBOL)!=g_symbol) return false;
    if((long)PositionGetInteger(POSITION_MAGIC)!=InpMagicNumber) return false;
    double old_sl=PositionGetDouble(POSITION_SL);
+   double old_tp=PositionGetDouble(POSITION_TP);
    ENUM_POSITION_TYPE type=(ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
    if(old_sl>0.0)
    {
@@ -274,12 +281,14 @@ bool ModifyPositionStops(const ulong ticket,const double new_sl,const double new
       if(type==POSITION_TYPE_SELL && new_sl>old_sl) return false;
    }
    if(new_sl<=0.0) return false;
+   double point=SymbolInfoDouble(g_symbol,SYMBOL_POINT);
+   double eps=(point>0.0?point*0.25:1e-9);
+   if(MathAbs(old_sl-new_sl)<=eps && MathAbs(old_tp-new_tp)<=eps) return true;
    bool basic=g_trade.PositionModify(ticket,new_sl,new_tp);
    uint ret=g_trade.ResultRetcode();
-   return basic && ret==TRADE_RETCODE_DONE;
+   return basic && (ret==TRADE_RETCODE_DONE || ret==TRADE_RETCODE_NO_CHANGES);
 }
 
-ulong GuardianFindPositionTicket(const string slot);
 #include "GuardianState.mqh"
 #include "GuardianHUD.mqh"
 #include "GuardianIPC.mqh"
