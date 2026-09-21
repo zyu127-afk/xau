@@ -1,22 +1,55 @@
 param(
-  [string]$Version = "0.1.0-dev",
+  [string]$Version = "0.21.0-dev",
   [string]$Output = "Backup"
 )
 $ErrorActionPreference='Stop'
 $root=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $outDir=Join-Path $root $Output
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-$staging=Join-Path $env:TEMP ("GoldTradingSystem_"+[guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Force -Path $staging | Out-Null
-$exclude=@('.git','Backup','Data','Logs','Runtime\python','Config\secrets.local','__pycache__')
-Get-ChildItem $root -Force | Where-Object {$_.Name -notin @('.git','Backup','Data','Logs')} | ForEach-Object {
-  Copy-Item $_.FullName -Destination $staging -Recurse -Force
+
+function New-Staging([string]$Name){
+  $p=Join-Path $env:TEMP ($Name+'_'+[guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Force -Path $p | Out-Null
+  return $p
 }
-$secret=Join-Path $staging 'Config\secrets.local'
-if(Test-Path $secret){Remove-Item $secret -Force}
-Get-ChildItem $staging -Recurse -Directory -Filter '__pycache__' | Remove-Item -Recurse -Force
+function Copy-Project([string]$Dest,[string[]]$SkipTop){
+  Get-ChildItem $root -Force | Where-Object {$_.Name -notin (@('.git','Backup','Data','Logs')+$SkipTop)} | ForEach-Object {
+    Copy-Item $_.FullName -Destination $Dest -Recurse -Force
+  }
+  foreach($secret in @('Config\secrets.local','Config\config.yaml','Config\paths.yaml','Runtime\dashboard.token','Runtime\control.json')){
+    $p=Join-Path $Dest $secret
+    if(Test-Path $p){Remove-Item $p -Force}
+  }
+  $runtimePython=Join-Path $Dest 'Runtime\python'
+  if(Test-Path $runtimePython){Remove-Item $runtimePython -Recurse -Force}
+  Get-ChildItem $Dest -Recurse -Directory -Filter '__pycache__' -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
+  Get-ChildItem $Dest -Recurse -File -Include '*.pyc','*.pyo' -ErrorAction SilentlyContinue | Remove-Item -Force
+}
+function Zip-Staging([string]$Staging,[string]$Target){
+  if(Test-Path $Target){Remove-Item $Target -Force}
+  Compress-Archive -Path (Join-Path $Staging '*') -DestinationPath $Target -CompressionLevel Optimal
+  Remove-Item $Staging -Recurse -Force
+  Write-Host "Created $Target"
+}
+
+$devStage=New-Staging 'GTS_DEV'
+Copy-Project $devStage @()
 $dev=Join-Path $outDir ("GoldTradingSystem_Dev_"+$Version+".zip")
-if(Test-Path $dev){Remove-Item $dev -Force}
-Compress-Archive -Path (Join-Path $staging '*') -DestinationPath $dev -CompressionLevel Optimal
-Write-Host "Created $dev"
-Remove-Item $staging -Recurse -Force
+Zip-Staging $devStage $dev
+
+$portableStage=New-Staging 'GTS_PORTABLE'
+Copy-Project $portableStage @('.github','Tests')
+$note=@"
+GoldTradingSystem Portable $Version
+
+1. 解压整个文件夹到任意本地磁盘。
+2. 双击 Start\安装到新电脑.bat：检测/选择 MT5、准备配置、建立项目 Python 环境、部署 Guardian。
+3. 按 Docs\MANUAL_SETUP.md 完成 ATAS SDK / Rithmic Paper / MT5 Socket 实机步骤。
+4. 双击 Start\启动系统.bat。
+
+Portable 包不包含真实 API Key、个人路径、数据库、日志或账户数据。
+Python 采用自动安装器方式准备，符合 Portable 交付的“运行环境或自动安装器”要求。
+"@
+Set-Content -Path (Join-Path $portableStage 'PORTABLE_README.txt') -Value $note -Encoding UTF8
+$portable=Join-Path $outDir ("GoldTradingSystem_Portable_"+$Version+".zip")
+Zip-Staging $portableStage $portable
