@@ -71,6 +71,18 @@ jobs:
               if(-not $buildInfo.embedded_python){ throw 'Portable BUILD_INFO must declare embedded_python=true' }
               & $py -c "import yaml,httpx,fastapi,uvicorn; import MetaTrader5; print('portable artifact runtime OK')"
               if($LASTEXITCODE -ne 0){ throw 'Portable runtime dependency validation failed' }
+
+              $outside=Join-Path $env:RUNNER_TEMP 'gts-outside-cwd'
+              New-Item -ItemType Directory -Force -Path $outside | Out-Null
+              Push-Location $outside
+              try {
+                & $py (Join-Path $dest 'Tools\validate_config.py')
+                if($LASTEXITCODE -ne 0){ throw 'Portable validate_config.py failed outside project root' }
+                & $py (Join-Path $dest 'Tools\run_smoke_test.py')
+                if($LASTEXITCODE -ne 0){ throw 'Portable run_smoke_test.py failed outside project root' }
+              } finally {
+                Pop-Location
+              }
             } else {
               if(Test-Path $py){ throw 'Dev ZIP must not silently embed portable Python' }
               if($buildInfo.embedded_python){ throw 'Dev BUILD_INFO must declare embedded_python=false' }
