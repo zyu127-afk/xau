@@ -10,12 +10,15 @@ from .atas_client import AtasBridgeClient
 from .config import Settings
 from .database import Database
 from .dashboard_client import DashboardClient
+from .degradation import classify_degradation
 from .guardian_server import GuardianServer
 from .mt5_data import MT5DataProvider
 from .orderflow import OrderFlowEngine
 from .price_alignment import PriceAlignmentEngine
 from .positions import PositionBook
 from .retention import prune_rolling_data
+from .review_scheduler import daily_review_loop
+from .startup_checks import StartupChecker
 
 
 class Runtime:
@@ -59,20 +62,23 @@ class Runtime:
     async def status_loop(self) -> None:
         while True:
             assessment = self.orderflow.assess()
-            payload = self.atas.state.latest.get("payload") or {} if self.atas.state.latest else {}
+            payload = (self.atas.state.latest.get("payload") or {}) if self.atas.state.latest else {}
             raw_gc = payload.get("last", payload.get("price")) if isinstance(payload, dict) else None
-            if raw_gc is not None and self.guardian.state.bid is not None and self.guardian.state.ask is not None:
-                if self.atas.state.health.value == "HEALTHY" and (time.monotonic() - self.atas.state.last_message_monotonic) <= 2.0:
-                    mt5_mid = (self.guardian.state.bid + self.guardian.state.ask) / 2.0
-                    self.alignment.add(float(raw_gc), mt5_mid)
+            atas_fresh = self.atas.state.health.value == "HEALTHY" and self.atas.state.last_message_monotonic > 0 and (time.monotonic() - self.atas.state.last_message_monotonic) <= float(self.settings.raw.get("atas", {}).get("stale_seconds", 5))
+            if raw_gc is not None and self.guardian.state.bid is not None and self.guardian.state.ask is not None and atas_fresh:
+                mt5_mid = (self.guardian.state.bid + self.guardian.state.ask) / 2.0
+                self.alignment.add(float(raw_gc), mt5_mid)
             estimate = self.alignment.estimate()
+            degradation = classify_degradation(mt5_alive=self.guardian.heartbeat_fresh(), atas_health=self.atas.state.health.value if atas_fresh else "OFFLINE", ai_health=self.ai_status)
             await self.dashboard.push({
                 "system": {
                     "mt5": "HEALTHY" if self.guardian.heartbeat_fresh() else "OFFLINE",
-                    "atas": self.atas.state.health.value,
-                    "rithmic": "CONNECTED" if self.atas.state.health.value == "HEALTHY" else "UNKNOWN",
+                    "atas": self.atas.state.health.value if atas_fresh else "OFFLINE",
+                    "rithmic": "CONNECTED" if atas_fresh else "UNKNOWN",
                     "ai": self.ai_status,
                     "mapping": "HEALTHY" if estimate else "WARMING_UP",
+                    "degradation_level": degradation.level,
+                    "degradation_mode": degradation.name,
                 },
                 "market": {
                     "symbol": self.guardian.state.symbol,
@@ -82,6 +88,7 @@ class Runtime:
                     "atas_contract": self.atas.state.instrument,
                     "gc_price": raw_gc,
                     "offset": estimate.offset if estimate else None,
+                    "mapping_correlation": estimate.correlation if estimate else None,
                 },
                 "orderflow_assessment": assessment.label,
                 "positions": {
@@ -110,6 +117,11 @@ class Runtime:
             self.log.warning("MT5 Python data adapter unavailable; Guardian protection remains independent")
 
     async def run(self) -> None:
+        checks = StartupChecker(self.settings).run_local_checks()
+        for check in checks:
+            (self.log.info if check.ok else self.log.warning)("startup check %s ok=%s critical=%s detail=%s", check.name, check.ok, check.critical, check.detail)
+        if not StartupChecker.critical_ok(checks):
+            raise RuntimeError("critical local startup checks failed")
         await self.guardian.start()
         await self._connect_mt5_data()
         tasks = [
@@ -117,6 +129,7 @@ class Runtime:
             asyncio.create_task(self.atas.run(), name="atas"),
             asyncio.create_task(self.status_loop(), name="status"),
             asyncio.create_task(self.retention_loop(), name="retention"),
+            asyncio.create_task(daily_review_loop(self.db), name="daily_review"),
             asyncio.create_task(self.analysis.loop(), name="analysis"),
         ]
         try:
