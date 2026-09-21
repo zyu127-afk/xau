@@ -1,0 +1,9 @@
+{
+  "version": "0.1.0-dev",
+  "build_date": "2026-09-21",
+  "commit": "bootstrap",
+  "database_version": 1,
+  "ea_version": "0.1.0-dev",
+  "atas_bridge_version": "0.1.0-dev",
+  "python_engine_version": "0.1.0-dev"
+}
