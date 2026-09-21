@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+
 import yaml
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from Engine.goldtrading.config import ConfigValidationError, validate_raw_config
 
-
-ROOT = Path(__file__).resolve().parents[1]
 CFG = ROOT / "Config" / "config.yaml"
 EXAMPLE = ROOT / "Config" / "config.example.yaml"
 
