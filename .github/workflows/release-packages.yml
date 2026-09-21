@@ -7,16 +7,16 @@ on:
       - 'v*'
     paths:
       - '.github/workflows/release-packages.yml'
-      - 'Tools/build_portable_python.ps1'
-      - 'Tools/build_release.ps1'
-      - 'Tools/install_runtime.ps1'
-      - 'Tools/install.ps1'
-      - 'Tools/start_system.ps1'
-      - 'Tools/stop_system.ps1'
       - 'Start/**'
-      - 'Engine/requirements*.txt'
-      - 'UI/requirements.txt'
-      - 'Version/version.json'
+      - 'MT5/**'
+      - 'ATAS/**'
+      - 'Engine/**'
+      - 'UI/**'
+      - 'AI/**'
+      - 'Config/**'
+      - 'Tools/**'
+      - 'Version/**'
+      - 'README.md'
 
 jobs:
   package:
