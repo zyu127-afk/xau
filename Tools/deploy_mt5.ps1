@@ -32,6 +32,23 @@ function Show-CompileSummary([string]$LogPath){
   }
 }
 
+function Wait-ForCompileResult([string]$Ex5Path,[string]$LogPath,[int]$TimeoutSeconds=30){
+  $deadline=[DateTime]::UtcNow.AddSeconds([Math]::Max(1,$TimeoutSeconds))
+  while([DateTime]::UtcNow -lt $deadline){
+    if(Test-Path $Ex5Path){ return $true }
+    if(Test-Path $LogPath){
+      $tail=(Get-Content $LogPath -Tail 8 -ErrorAction SilentlyContinue) -join "`n"
+      if($tail -match '(?im)\b[1-9][0-9]*\s+errors?\b'){ return $false }
+      if($tail -match '(?im)\b0\s+errors?\b' -and -not (Test-Path $Ex5Path)){
+        Start-Sleep -Milliseconds 500
+        if(Test-Path $Ex5Path){ return $true }
+      }
+    }
+    Start-Sleep -Milliseconds 250
+  }
+  return (Test-Path $Ex5Path)
+}
+
 $compiled=$false
 $compileAttempted=$false
 $compileLog=''
@@ -39,16 +56,18 @@ if(-not $SkipCompile){
   if($MetaEditorPath -and (Test-Path $MetaEditorPath)){
     $compileAttempted=$true
     $source=Join-Path $experts 'GoldTradingGuardian.mq5'
+    $ex5=Join-Path $experts 'GoldTradingGuardian.ex5'
     $compileLog=Join-Path $root 'Logs\mt5_compile.log'
     New-Item -ItemType Directory -Force -Path (Split-Path $compileLog) | Out-Null
     Remove-Item $compileLog -Force -ErrorAction SilentlyContinue
+    Remove-Item $ex5 -Force -ErrorAction SilentlyContinue
+    Write-Host '[MT5] Starting MetaEditor compile. Waiting up to 30 seconds for a fresh EX5...'
     & $MetaEditorPath "/compile:$source" "/log:$compileLog"
-    Start-Sleep -Milliseconds 750
-    $compiled=Test-Path (Join-Path $experts 'GoldTradingGuardian.ex5')
+    $compiled=Wait-ForCompileResult $ex5 $compileLog 30
     if($compiled){
       Write-Host '[MT5] GoldTradingGuardian.ex5 compiled successfully.' -ForegroundColor Green
     } else {
-      Write-Warning 'MetaEditor did not produce EX5.'
+      Write-Warning 'MetaEditor did not produce a fresh EX5 within the compile window.'
       Show-CompileSummary $compileLog
       Write-Warning "Full compile log: $compileLog"
     }
