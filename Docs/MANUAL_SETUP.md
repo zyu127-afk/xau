@@ -52,7 +52,7 @@ API_KEY=你的真实Key
 
 不要把 Key 发到 GitHub、日志、Dashboard 或普通备份。
 
-## 5. 启动与只读预检
+## 5. 启动、只读预检与正常停止
 
 先双击：
 
@@ -72,6 +72,14 @@ API_KEY=你的真实Key
 - Mapping 从 WARMING_UP 进入 HEALTHY
 - AI 根据配置进入 HEALTHY/SLOW 或其他明确状态
 
+正常结束本地系统时，双击：
+
+`Start/停止系统.bat`
+
+该脚本先请求 Engine 正常退出，再只停止 `Runtime/processes.json` 中由本系统启动且 PID、启动时间、Python 路径仍匹配的 Engine/Dashboard 进程。它不会广泛结束其他 Python 进程，也不会发送 `CLOSE_ALL`，因此正常停止不会自动平掉 MT5 已有仓位。
+
+正常停止后，MT5 内的 Guardian 不会被该脚本卸载，已有服务器 SL 与 Guardian 本地周末保护继续存在。需要立即平掉系统仓位时，必须使用 Dashboard 中明确的“紧急平仓”操作；不要把“停止系统”和“紧急平仓”视为同一个动作。
+
 ## 6. 模拟盘验收顺序
 
 必须先在 MT5 Demo + Rithmic Paper 完成：
@@ -84,10 +92,11 @@ API_KEY=你的真实Key
 6. DeepSeek 请求、超时和 STALE 丢弃。
 7. Position A / B 模拟开仓、真实服务器 SL、修改 SL、平仓、撤单。
 8. AI Sleep 和“暂停新开仓”只禁止新仓，不破坏已有仓保护。
-9. Python 强制结束后，已有仓仍由 Guardian + 服务器 SL 保护。
-10. ATAS/Rithmic 断开后，已有仓仍可平仓/改 SL/执行周末保护。
-11. 周五真实 Session 前进入本地周末保护，撤单、平掉系统仓位，并确认 Positions=0、Orders=0。
-12. Dashboard、MT5 HUD、日志、SQLite、MFE/MAE、NO TRADE、复盘记录一致。
-13. 把整个项目复制到另一个本地路径，再跑一次安装器/预检，确认所有配置和运行路径仍为相对/本机生成。
+9. 运行中执行 `Start/停止系统.bat`，确认 Engine/Dashboard 正常停止、其他 Python 不受影响、已有 MT5 仓位不因正常停止被平掉。
+10. Python 强制结束后，已有仓仍由 Guardian + 服务器 SL 保护。
+11. ATAS/Rithmic 断开后，已有仓仍可平仓/改 SL/执行周末保护。
+12. 周五真实 Session 前进入本地周末保护，撤单、平掉系统仓位，并确认 Positions=0、Orders=0。
+13. Dashboard、MT5 HUD、日志、SQLite、MFE/MAE、NO TRADE、复盘记录一致。
+14. 把整个项目复制到另一个本地路径，再跑一次安装器/预检/启动/停止，确认所有配置和运行路径仍为相对/本机生成。
 
 全部模拟盘项目通过后，才进入下一阶段。仓库代码或 CI 通过不能替代这些实机验收。
