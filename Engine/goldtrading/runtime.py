@@ -3,12 +3,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, timezone
+from .analysis_engine import AnalysisEngine
 from .atas_client import AtasBridgeClient
 from .config import Settings
 from .database import Database
 from .dashboard_client import DashboardClient
 from .guardian_server import GuardianServer
+from .mt5_data import MT5DataProvider
 from .orderflow import OrderFlowEngine
 from .price_alignment import PriceAlignmentEngine
 from .positions import PositionBook
@@ -27,8 +30,17 @@ class Runtime:
         atas = settings.raw.get("atas", {})
         self.guardian = GuardianServer(str(mt5.get("host", "127.0.0.1")), int(mt5.get("port", 17832)), self._on_guardian)
         self.atas = AtasBridgeClient(str(atas.get("host", "127.0.0.1")), int(atas.get("port", 17831)), self._on_atas)
+        terminal_path = str(mt5.get("terminal_path", "")).strip() or None
+        self.mt5_data = MT5DataProvider(terminal_path) if bool(mt5.get("python_data_adapter", True)) else None
         self.dashboard = DashboardClient(f"http://127.0.0.1:{int(settings.raw.get('ui',{}).get('port',17840))}")
         self.log = logging.getLogger("system")
+        self.ai_status = "OFFLINE"
+        self.analysis = AnalysisEngine(self)
+
+    def logical_slot_active(self, slot: str) -> bool:
+        if slot.upper() == "A": return self.guardian.state.slot_a_active
+        if slot.upper() == "B": return self.guardian.state.slot_b_active
+        raise KeyError(slot)
 
     async def _on_guardian(self, parts: list[str]) -> None:
         now = datetime.now(timezone.utc).isoformat()
@@ -47,13 +59,20 @@ class Runtime:
     async def status_loop(self) -> None:
         while True:
             assessment = self.orderflow.assess()
+            payload = self.atas.state.latest.get("payload") or {} if self.atas.state.latest else {}
+            raw_gc = payload.get("last", payload.get("price")) if isinstance(payload, dict) else None
+            if raw_gc is not None and self.guardian.state.bid is not None and self.guardian.state.ask is not None:
+                if self.atas.state.health.value == "HEALTHY" and (time.monotonic() - self.atas.state.last_message_monotonic) <= 2.0:
+                    mt5_mid = (self.guardian.state.bid + self.guardian.state.ask) / 2.0
+                    self.alignment.add(float(raw_gc), mt5_mid)
+            estimate = self.alignment.estimate()
             await self.dashboard.push({
                 "system": {
                     "mt5": "HEALTHY" if self.guardian.heartbeat_fresh() else "OFFLINE",
                     "atas": self.atas.state.health.value,
                     "rithmic": "CONNECTED" if self.atas.state.health.value == "HEALTHY" else "UNKNOWN",
-                    "ai": "OFFLINE",
-                    "mapping": "HEALTHY" if self.alignment.estimate() else "WARMING_UP",
+                    "ai": self.ai_status,
+                    "mapping": "HEALTHY" if estimate else "WARMING_UP",
                 },
                 "market": {
                     "symbol": self.guardian.state.symbol,
@@ -61,10 +80,14 @@ class Runtime:
                     "ask": self.guardian.state.ask,
                     "spread": self.guardian.state.spread_points,
                     "atas_contract": self.atas.state.instrument,
-                    "gc_price": (self.atas.state.latest.get("payload") or {}).get("last") if self.atas.state.latest else None,
-                    "offset": self.alignment.estimate().offset if self.alignment.estimate() else None,
+                    "gc_price": raw_gc,
+                    "offset": estimate.offset if estimate else None,
                 },
                 "orderflow_assessment": assessment.label,
+                "positions": {
+                    "A": {"active": self.guardian.state.slot_a_active},
+                    "B": {"active": self.guardian.state.slot_b_active},
+                },
             })
             await asyncio.sleep(1.0)
 
@@ -75,16 +98,31 @@ class Runtime:
                 self.log.info("90-day rolling retention removed %d raw/detail rows", deleted)
             await asyncio.sleep(6 * 3600)
 
+    async def _connect_mt5_data(self) -> None:
+        if self.mt5_data is None:
+            self.log.warning("MT5 Python data adapter disabled")
+            return
+        ok = await asyncio.to_thread(self.mt5_data.connect)
+        if ok:
+            account = await asyncio.to_thread(self.mt5_data.account)
+            self.log.info("MT5 Python data adapter connected account=%s", None if account is None else account.get("login"))
+        else:
+            self.log.warning("MT5 Python data adapter unavailable; Guardian protection remains independent")
+
     async def run(self) -> None:
         await self.guardian.start()
+        await self._connect_mt5_data()
         tasks = [
             asyncio.create_task(self.guardian.serve_forever(), name="guardian"),
             asyncio.create_task(self.atas.run(), name="atas"),
             asyncio.create_task(self.status_loop(), name="status"),
             asyncio.create_task(self.retention_loop(), name="retention"),
+            asyncio.create_task(self.analysis.loop(), name="analysis"),
         ]
         try:
             await asyncio.gather(*tasks)
         finally:
             await self.atas.stop()
             await self.guardian.close()
+            if self.mt5_data is not None:
+                await asyncio.to_thread(self.mt5_data.shutdown)

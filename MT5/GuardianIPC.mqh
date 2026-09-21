@@ -20,22 +20,14 @@ string GuardianAccountMode()
 int GuardianSystemPositionCount()
 {
    int n=0;
-   for(int i=0;i<PositionsTotal();i++)
-   {
-      ulong ticket=0;
-      if(IsSystemPositionByIndex(i,ticket)) n++;
-   }
+   for(int i=0;i<PositionsTotal();i++) { ulong ticket=0; if(IsSystemPositionByIndex(i,ticket)) n++; }
    return n;
 }
 
 int GuardianSystemOrderCount()
 {
    int n=0;
-   for(int i=0;i<OrdersTotal();i++)
-   {
-      ulong ticket=0;
-      if(IsSystemOrderByIndex(i,ticket)) n++;
-   }
+   for(int i=0;i<OrdersTotal();i++) { ulong ticket=0; if(IsSystemOrderByIndex(i,ticket)) n++; }
    return n;
 }
 
@@ -45,17 +37,12 @@ bool GuardianIpcSend(const string text)
    uchar data[];
    int copied=StringToCharArray(text,data,0,StringLen(text),CP_UTF8);
    if(copied<=0) return false;
-   int sent=SocketSend(g_ipc_socket,data,(uint)copied);
-   return sent==copied;
+   return SocketSend(g_ipc_socket,data,(uint)copied)==copied;
 }
 
 void GuardianIpcClose()
 {
-   if(g_ipc_socket!=INVALID_HANDLE)
-   {
-      SocketClose(g_ipc_socket);
-      g_ipc_socket=INVALID_HANDLE;
-   }
+   if(g_ipc_socket!=INVALID_HANDLE){ SocketClose(g_ipc_socket); g_ipc_socket=INVALID_HANDLE; }
    g_ipc_buffer="";
 }
 
@@ -66,21 +53,15 @@ bool GuardianIpcConnect()
    GuardianIpcClose();
    ResetLastError();
    g_ipc_socket=SocketCreate();
-   if(g_ipc_socket==INVALID_HANDLE)
-   {
-      PrintFormat("GUARDIAN IPC SocketCreate failed error=%d",GetLastError());
-      return false;
-   }
+   if(g_ipc_socket==INVALID_HANDLE){ PrintFormat("GUARDIAN IPC SocketCreate failed error=%d",GetLastError()); return false; }
    if(!SocketConnect(g_ipc_socket,InpEngineHost,InpEnginePort,InpConnectTimeoutMs))
    {
       int err=GetLastError();
-      PrintFormat("GUARDIAN IPC connect failed %s:%u error=%d. Ensure localhost is allowed in MT5 Expert Advisors settings.",InpEngineHost,InpEnginePort,err);
-      GuardianIpcClose();
-      return false;
+      PrintFormat("GUARDIAN IPC connect failed %s:%u error=%d. Allow localhost in MT5 Expert Advisors network settings.",InpEngineHost,InpEnginePort,err);
+      GuardianIpcClose(); return false;
    }
    SocketTimeouts(g_ipc_socket,50,50);
-   string hello=StringFormat("HELLO|%I64d|%s|%s|0.10\n",AccountInfoInteger(ACCOUNT_LOGIN),g_symbol,GuardianAccountMode());
-   GuardianIpcSend(hello);
+   GuardianIpcSend(StringFormat("HELLO|%I64d|%s|%s|0.11\n",AccountInfoInteger(ACCOUNT_LOGIN),g_symbol,GuardianAccountMode()));
    PrintFormat("GUARDIAN IPC connected to %s:%u",InpEngineHost,InpEnginePort);
    return true;
 }
@@ -88,9 +69,7 @@ bool GuardianIpcConnect()
 void GuardianIpcAck(const string command_id,const bool ok,const string reason)
 {
    string clean=reason;
-   StringReplace(clean,"|","/");
-   StringReplace(clean,"\r"," ");
-   StringReplace(clean,"\n"," ");
+   StringReplace(clean,"|","/"); StringReplace(clean,"\r"," "); StringReplace(clean,"\n"," ");
    GuardianIpcSend(StringFormat("ACK|%s|%s|%s\n",command_id,(ok ? "OK" : "REJECT"),clean));
 }
 
@@ -110,36 +89,25 @@ ulong GuardianFindPositionTicket(const string slot)
 void GuardianHandleCommand(const string line)
 {
    string p[];
-   ushort sep=(ushort)StringGetCharacter("|",0);
-   int n=StringSplit(line,sep,p);
+   int n=StringSplit(line,(ushort)StringGetCharacter("|",0),p);
    if(n<3 || p[0]!="GTS1") return;
-   string id=p[1];
-   string action=p[2];
+   string id=p[1],action=p[2];
    if(action=="CLOSE_ALL")
    {
-      CancelAllSystemOrders();
-      CloseAllSystemPositions();
-      GuardianIpcAck(id,true,"closed all system exposure");
-      return;
+      CancelAllSystemOrders(); CloseAllSystemPositions();
+      GuardianIpcAck(id,true,"closed all system exposure"); return;
    }
-   if(n<12)
-   {
-      GuardianIpcAck(id,false,"malformed command");
-      return;
-   }
+   if(n<12){ GuardianIpcAck(id,false,"malformed command"); return; }
    string slot=p[3],side=p[4];
-   double lot=StringToDouble(p[5]);
-   double sl=StringToDouble(p[6]);
+   double lot=StringToDouble(p[5]),sl=StringToDouble(p[6]);
    double tp=(p[7]=="" ? 0.0 : StringToDouble(p[7]));
-   double zone_low=StringToDouble(p[8]);
-   double zone_high=StringToDouble(p[9]);
+   double zone_low=StringToDouble(p[8]),zone_high=StringToDouble(p[9]);
    datetime valid_until=(datetime)(long)StringToInteger(p[10]);
    string reason=p[11];
    if(action=="OPEN")
    {
       bool ok=OpenMarket(slot,side,lot,sl,tp,zone_low,zone_high,valid_until,reason);
-      GuardianIpcAck(id,ok,(ok ? "open accepted" : "open rejected by local checks"));
-      return;
+      GuardianIpcAck(id,ok,(ok ? "open accepted" : "open rejected by local checks")); return;
    }
    if(action=="MODIFY_SL")
    {
@@ -147,8 +115,7 @@ void GuardianHandleCommand(const string line)
       ulong ticket=GuardianFindPositionTicket(slot);
       if(ticket==0){ GuardianIpcAck(id,false,"position not found"); return; }
       bool ok=ModifyPositionStops(ticket,sl,tp);
-      GuardianIpcAck(id,ok,(ok ? "stops modified" : "stop modification rejected"));
-      return;
+      GuardianIpcAck(id,ok,(ok ? "stops modified" : "stop modification rejected")); return;
    }
    GuardianIpcAck(id,false,"unsupported action");
 }
@@ -186,16 +153,16 @@ void GuardianIpcHeartbeat()
    if(!SymbolInfoTick(g_symbol,tick)) return;
    double point=SymbolInfoDouble(g_symbol,SYMBOL_POINT);
    double spread=(point>0 ? (tick.ask-tick.bid)/point : 0.0);
-   GuardianIpcSend(StringFormat("HB|%I64d|%.10f|%.10f|%.2f|%d|%d|%d\n",
-      (long)TimeTradeServer(),tick.bid,tick.ask,spread,GuardianSystemPositionCount(),GuardianSystemOrderCount(),(g_weekend_protection ? 1 : 0)));
+   GuardianIpcSend(StringFormat("HB|%I64d|%.10f|%.10f|%.2f|%d|%d|%d|%d|%d\n",
+      (long)TimeTradeServer(),tick.bid,tick.ask,spread,GuardianSystemPositionCount(),GuardianSystemOrderCount(),
+      (g_weekend_protection ? 1 : 0),(SlotActive("A") ? 1 : 0),(SlotActive("B") ? 1 : 0)));
 }
 
 void GuardianIpcPoll()
 {
    if(!InpIpcEnabled) return;
    if(!GuardianIpcConnect()) return;
-   GuardianIpcRead();
-   GuardianIpcHeartbeat();
+   GuardianIpcRead(); GuardianIpcHeartbeat();
 }
 
 #endif

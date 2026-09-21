@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Awaitable, Callable
 from .guardian_protocol import GuardianCommand
 
@@ -21,10 +21,12 @@ class GuardianConnectionState:
     positions: int = 0
     orders: int = 0
     weekend_protection: bool = False
+    slot_a_active: bool = False
+    slot_b_active: bool = False
 
 
 class GuardianServer:
-    """Loopback-only command channel. The EA still performs every final safety check locally."""
+    """Loopback-only command channel. The EA repeats every final safety check locally."""
 
     def __init__(self, host: str = "127.0.0.1", port: int = 17832,
                  on_event: Callable[[list[str]], Awaitable[None]] | None = None) -> None:
@@ -85,6 +87,9 @@ class GuardianServer:
                     self.state.last_heartbeat = time.monotonic()
                     self.state.bid = float(parts[2]); self.state.ask = float(parts[3]); self.state.spread_points = float(parts[4])
                     self.state.positions = int(parts[5]); self.state.orders = int(parts[6]); self.state.weekend_protection = parts[7] == "1"
+                    if len(parts) >= 10:
+                        self.state.slot_a_active = parts[8] == "1"
+                        self.state.slot_b_active = parts[9] == "1"
                 elif kind == "ACK" and len(parts) >= 4:
                     fut = self._acks.pop(parts[1], None)
                     if fut and not fut.done():
