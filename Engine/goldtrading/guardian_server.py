@@ -55,6 +55,7 @@ class GuardianServer:
         self.port = port
         self.on_event = on_event
         self.state = GuardianConnectionState()
+        self.new_entries_allowed = True
         self._server: asyncio.AbstractServer | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._write_lock = asyncio.Lock()
@@ -196,6 +197,8 @@ class GuardianServer:
         writer = self._writer
         if writer is None or writer.is_closing() or not self.state.connected:
             return False, "Guardian offline"
+        if command.action.upper() == "OPEN" and not self.new_entries_allowed:
+            return False, "new entries paused by local control"
         if command.command_id in self._acks:
             return False, "duplicate command id already pending"
         loop = asyncio.get_running_loop()
