@@ -41,6 +41,7 @@ class Runtime:
         self.dashboard = DashboardClient(f"http://127.0.0.1:{int(settings.raw.get('ui',{}).get('port',17840))}")
         self.log = logging.getLogger("system")
         self.ai_status = "OFFLINE"
+        self.ai_latency_ms: float | None = None
         self.analysis = AnalysisEngine(self)
         mgmt = settings.raw.get("position_management", {})
         self.position_manager = DynamicPositionManager(
@@ -52,23 +53,42 @@ class Runtime:
         )
         self._last_management_action: dict[str, float] = {"A": 0.0, "B": 0.0}
         self._last_slot_persist = 0.0
+        self._last_mapping_persist = 0.0
+        self._last_atas_instrument = ""
 
     def logical_slot_active(self, slot: str) -> bool:
         if slot.upper() == "A": return self.guardian.state.slot_a_active
         if slot.upper() == "B": return self.guardian.state.slot_b_active
         raise KeyError(slot)
 
+    def mapping_quality(self) -> tuple[bool, str]:
+        cfg = self.settings.raw.get("price_mapping", {})
+        reason = self.alignment.quality_reason(
+            min_correlation=float(cfg.get("min_correlation", 0.80)),
+            max_residual=float(cfg.get("max_residual", 2.50)),
+            stale_seconds=float(cfg.get("stale_seconds", 5.0)),
+        )
+        return reason == "HEALTHY", reason
+
     async def _on_guardian(self, parts: list[str]) -> None:
         now = datetime.now(timezone.utc).isoformat()
         kind = parts[0] if parts else "UNKNOWN"
-        # Heartbeats are intentionally not copied into SystemEvents at 1 Hz; compact slot snapshots are persisted separately.
         if kind != "HB":
             self.db.execute("INSERT INTO SystemEvents(ts,level,component,event,payload) VALUES(?,?,?,?,?)",
                             (now, "INFO", "MT5", kind, json.dumps(parts, ensure_ascii=False)))
 
     async def _on_atas(self, event: dict) -> None:
-        self.orderflow.ingest(event)
         now = str(event.get("ts_utc") or datetime.now(timezone.utc).isoformat())
+        instrument = str(event.get("instrument") or "")
+        if instrument:
+            changed = self.alignment.set_instrument(instrument)
+            if changed:
+                self.orderflow.reset()
+                self.db.execute("INSERT INTO SystemEvents(ts,level,component,event,payload) VALUES(?,?,?,?,?)",
+                                (now, "WARNING", "ATAS", "INSTRUMENT_CHANGED",
+                                 json.dumps({"from": self._last_atas_instrument, "to": instrument, "mapping": "RESET"}, ensure_ascii=False)))
+            self._last_atas_instrument = instrument
+        self.orderflow.ingest(event)
         payload = event.get("payload") or {}
         gc_price = payload.get("price") or payload.get("last")
         strength = payload.get("strength")
@@ -88,6 +108,7 @@ class Runtime:
                 mt5_mid = (self.guardian.state.bid + self.guardian.state.ask) / 2.0
                 self.alignment.add(float(raw_gc), mt5_mid)
             estimate = self.alignment.estimate()
+            mapping_ok, mapping_reason = self.mapping_quality()
             degradation = classify_degradation(mt5_alive=self.guardian.heartbeat_fresh(), atas_health=self.atas.state.health.value if atas_fresh else "OFFLINE", ai_health=self.ai_status)
             await self.dashboard.push({
                 "system": {
@@ -95,7 +116,8 @@ class Runtime:
                     "atas": self.atas.state.health.value if atas_fresh else "OFFLINE",
                     "rithmic": "CONNECTED" if atas_fresh else "UNKNOWN",
                     "ai": self.ai_status,
-                    "mapping": "HEALTHY" if estimate else "WARMING_UP",
+                    "ai_latency_ms": self.ai_latency_ms,
+                    "mapping": "HEALTHY" if mapping_ok else mapping_reason,
                     "degradation_level": degradation.level,
                     "degradation_mode": degradation.name,
                 },
@@ -108,13 +130,23 @@ class Runtime:
                     "gc_price": raw_gc,
                     "offset": estimate.offset if estimate else None,
                     "mapping_correlation": estimate.correlation if estimate else None,
+                    "mapping_rmse": estimate.rmse if estimate else None,
+                    "mapping_age_seconds": estimate.age_seconds if estimate else None,
                 },
                 "orderflow_assessment": assessment.label,
                 "positions": {"A": self._slot_dashboard("A"), "B": self._slot_dashboard("B")},
             })
-            if self.guardian.heartbeat_fresh() and time.monotonic() - self._last_slot_persist >= 10.0:
+            now_mono = time.monotonic()
+            if self.guardian.heartbeat_fresh() and now_mono - self._last_slot_persist >= 10.0:
                 persist_guardian_slots(self.db, self.guardian.state)
-                self._last_slot_persist = time.monotonic()
+                self._last_slot_persist = now_mono
+            if estimate is not None and now_mono - self._last_mapping_persist >= 10.0:
+                self.db.execute("INSERT INTO PriceMapping(ts,a,b,correlation,latency_ms,payload) VALUES(?,?,?,?,?,?)",
+                                (datetime.now(timezone.utc).isoformat(), estimate.a, estimate.b, estimate.correlation, None,
+                                 json.dumps({"instrument": self.alignment.instrument, "rmse": estimate.rmse,
+                                             "max_abs_residual": estimate.max_abs_residual, "age_seconds": estimate.age_seconds,
+                                             "quality": mapping_reason}, ensure_ascii=False)))
+                self._last_mapping_persist = now_mono
             await asyncio.sleep(1.0)
 
     async def position_management_loop(self) -> None:
