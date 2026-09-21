@@ -33,17 +33,47 @@ jobs:
       - name: Build Dev and Portable ZIPs
         shell: pwsh
         run: ./Tools/build_release.ps1 -Version '${{ steps.version.outputs.version }}' -RequirePortablePython
-      - name: Verify portable runtime is inside ZIP
+      - name: Verify delivery privacy layout provenance and runtime
         shell: pwsh
         run: |
-          $zip=Get-ChildItem Backup/GoldTradingSystem_Portable_*.zip | Select-Object -First 1
-          if(-not $zip){ throw 'Portable ZIP missing' }
-          $dest=Join-Path $env:RUNNER_TEMP 'gts-portable-check'
-          Expand-Archive $zip.FullName $dest -Force
-          $py=Join-Path $dest 'Runtime\python\python.exe'
-          if(-not (Test-Path $py)){ throw 'Portable Python missing from delivery ZIP' }
-          & $py -c "import yaml,httpx,fastapi,uvicorn; import MetaTrader5; print('portable artifact runtime OK')"
-          if($LASTEXITCODE -ne 0){ throw 'Portable runtime dependency validation failed' }
+          $zips=@(Get-ChildItem Backup/GoldTradingSystem_*.zip)
+          if($zips.Count -ne 2){ throw "Expected exactly two delivery ZIPs, found $($zips.Count)" }
+          foreach($zip in $zips){
+            $dest=Join-Path $env:RUNNER_TEMP ([IO.Path]::GetFileNameWithoutExtension($zip.Name))
+            if(Test-Path $dest){ Remove-Item $dest -Recurse -Force }
+            Expand-Archive $zip.FullName $dest -Force
+
+            foreach($dir in @('Start','MT5','ATAS','Engine','UI','AI','Config','Data','Logs','Backup','Runtime','Version','Tools','Docs')){
+              if(-not (Test-Path (Join-Path $dest $dir) -PathType Container)){ throw "$($zip.Name): required root folder missing: $dir" }
+            }
+
+            $buildInfoPath=Join-Path $dest 'BUILD_INFO.json'
+            if(-not (Test-Path $buildInfoPath)){ throw "$($zip.Name): BUILD_INFO.json missing" }
+            $buildInfo=Get-Content $buildInfoPath -Raw | ConvertFrom-Json
+            if($buildInfo.version -ne '${{ steps.version.outputs.version }}'){ throw "$($zip.Name): BUILD_INFO version mismatch" }
+            if($buildInfo.commit -ne $env:GITHUB_SHA){ throw "$($zip.Name): BUILD_INFO commit mismatch" }
+
+            foreach($rel in @(
+              '.env','Config\secrets.local','Config\config.yaml','Config\paths.yaml',
+              'Runtime\dashboard.token','Runtime\control.json','Runtime\acceptance-report.json',
+              'Runtime\atas-binding.json','Runtime\mt5-binding.json','Runtime\diagnostics'
+            )){
+              if(Test-Path (Join-Path $dest $rel)){ throw "$($zip.Name): sensitive local state leaked: $rel" }
+            }
+            $hidden=@(Get-ChildItem $dest -Recurse -Force -File -ErrorAction SilentlyContinue | Where-Object {$_.Name -eq '.env' -or $_.Name -eq 'secrets.local'})
+            if($hidden.Count -gt 0){ throw "$($zip.Name): hidden credential file leaked" }
+
+            $py=Join-Path $dest 'Runtime\python\python.exe'
+            if($zip.Name -like '*_Portable_*'){
+              if(-not (Test-Path $py)){ throw 'Portable Python missing from delivery ZIP' }
+              if(-not $buildInfo.embedded_python){ throw 'Portable BUILD_INFO must declare embedded_python=true' }
+              & $py -c "import yaml,httpx,fastapi,uvicorn; import MetaTrader5; print('portable artifact runtime OK')"
+              if($LASTEXITCODE -ne 0){ throw 'Portable runtime dependency validation failed' }
+            } else {
+              if(Test-Path $py){ throw 'Dev ZIP must not silently embed portable Python' }
+              if($buildInfo.embedded_python){ throw 'Dev BUILD_INFO must declare embedded_python=false' }
+            }
+          }
       - name: Upload delivery artifacts
         uses: actions/upload-artifact@v4
         with:
