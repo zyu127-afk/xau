@@ -1,5 +1,5 @@
 #property strict
-#property version   "0.20"
+#property version   "0.21"
 #property description "GoldTradingSystem Guardian - final local execution and risk authority"
 #property description "IPC requires the local engine address to be allowed in MT5 Expert Advisors network settings."
 
@@ -12,6 +12,7 @@ input double InpMaxSpreadPoints          = 80.0;
 input int    InpWeekendFlattenMinutes    = 30;
 input int    InpTimerMilliseconds        = 250;
 input bool   InpAllowNewTrades           = true;
+input bool   InpShowHud                  = true;
 
 CTrade g_trade;
 bool   g_weekend_protection=false;
@@ -280,6 +281,7 @@ bool ModifyPositionStops(const ulong ticket,const double new_sl,const double new
 
 ulong GuardianFindPositionTicket(const string slot);
 #include "GuardianState.mqh"
+#include "GuardianHUD.mqh"
 #include "GuardianIPC.mqh"
 
 void ReconcileHedgingSlots()
@@ -314,6 +316,7 @@ int OnInit()
    ReconcileHedgingSlots();
    ReconcileSlotStateWithBroker();
    EventSetMillisecondTimer(MathMax(100,InpTimerMilliseconds));
+   GuardianHudRender();
    PrintFormat("GoldTrading Guardian initialized account=%I64d symbol=%s",AccountInfoInteger(ACCOUNT_LOGIN),g_symbol);
    return INIT_SUCCEEDED;
 }
@@ -322,6 +325,7 @@ void OnDeinit(const int reason)
 {
    EventKillTimer();
    GuardianIpcClose();
+   GuardianHudClear();
 }
 
 void OnTimer()
@@ -329,6 +333,7 @@ void OnTimer()
    EnforceWeekendProtection();
    ReconcileSlotStateWithBroker();
    GuardianIpcPoll();
+   GuardianHudRender();
 }
 
 void OnTick()
