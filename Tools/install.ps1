@@ -14,8 +14,8 @@ function Get-ProjectPython {
   return $null
 }
 
-Write-Host '=== GoldTradingSystem 新电脑安装器 ===' -ForegroundColor Cyan
-Write-Host "主目录: $root"
+Write-Host '=== GoldTradingSystem installer ===' -ForegroundColor Cyan
+Write-Host "Project root: $root"
 
 $mt5=@()
 $termRoot=Join-Path $env:APPDATA 'MetaQuotes\Terminal'
@@ -34,13 +34,13 @@ if(Test-Path $termRoot){
     }
   }
 }
-if($mt5.Count -eq 0){ throw '未检测到 MT5 数据目录。请至少启动一次目标 MT5 后重新运行安装器。' }
-Write-Host "`n检测到 MT5 实例："
+if($mt5.Count -eq 0){ throw 'No MT5 data directory was detected. Start the target MT5 terminal once and rerun this installer.' }
+Write-Host "`nDetected MT5 instances:"
 for($i=0;$i -lt $mt5.Count;$i++){ Write-Host "[$($i+1)] $($mt5[$i].Origin)  ->  $($mt5[$i].DataPath)" }
 $choice=1
 if($mt5.Count -gt 1){
-  $raw=Read-Host '请输入要使用的 MT5 编号'
-  if(-not [int]::TryParse($raw,[ref]$choice) -or $choice -lt 1 -or $choice -gt $mt5.Count){ throw 'MT5 选择无效。' }
+  $raw=Read-Host 'Enter the MT5 number to use'
+  if(-not [int]::TryParse($raw,[ref]$choice) -or $choice -lt 1 -or $choice -gt $mt5.Count){ throw 'Invalid MT5 selection.' }
 }
 $selected=$mt5[$choice-1]
 
@@ -66,18 +66,19 @@ if($pf86){
 $atasCandidates=@($atasRaw | Where-Object {$_ -and (Test-Path $_)} | Select-Object -Unique)
 $atasPath=''
 if($atasCandidates.Count -gt 0){
-  Write-Host "`n检测到 ATAS 路径："
+  Write-Host "`nDetected ATAS paths:"
   for($i=0;$i -lt $atasCandidates.Count;$i++){Write-Host "[$($i+1)] $($atasCandidates[$i])"}
   $a=1
   if($atasCandidates.Count -gt 1){
-    $raw=Read-Host '请输入 ATAS 编号'
-    if(-not [int]::TryParse($raw,[ref]$a) -or $a -lt 1 -or $a -gt $atasCandidates.Count){throw 'ATAS 选择无效。'}
+    $raw=Read-Host 'Enter the ATAS number to use'
+    if(-not [int]::TryParse($raw,[ref]$a) -or $a -lt 1 -or $a -gt $atasCandidates.Count){throw 'Invalid ATAS selection.'}
   }
   $atasPath=$atasCandidates[$a-1]
 } else {
-  Write-Warning '未自动检测到 ATAS。稍后可手工填写 Config/paths.yaml；这不会阻止 Guardian 本地保护。'
+  Write-Warning 'ATAS was not detected automatically. You can set Config/paths.yaml later. Guardian local protection is not blocked by this.'
 }
-$atasTarget=if($env:APPDATA){ Join-Path $env:APPDATA 'ATAS\Indicators' } else { '' }
+$atasTarget=''
+if($env:APPDATA){ $atasTarget=Join-Path $env:APPDATA 'ATAS\Indicators' }
 
 function YamlQuote([string]$v){
   if($null -eq $v){$v=''}
@@ -94,7 +95,7 @@ atas:
   bridge_target_path: $(YamlQuote $atasTarget)
 "@
 Set-Content -Path (Join-Path $configDir 'paths.yaml') -Value $paths -Encoding UTF8
-Write-Host '[Config] 已写入 Config/paths.yaml'
+Write-Host '[Config] Wrote Config/paths.yaml'
 
 & (Join-Path $PSScriptRoot 'deploy_mt5.ps1') -TerminalDataPath $selected.DataPath -MetaEditorPath $selected.MetaEditor
 
@@ -104,14 +105,14 @@ if(-not [string]::IsNullOrWhiteSpace($atasPath)){
     & (Join-Path $PSScriptRoot 'deploy_atas.ps1') -AtasInstallPath $atasPath -TargetPath $atasTarget
     $atasBound=($LASTEXITCODE -eq 0)
   } catch {
-    Write-Warning ("ATAS SDK 自动绑定暂未完成: " + $_.Exception.Message)
-    Write-Warning '安装器继续；Guardian/Python 可先准备。最终验收前必须让 ATAS SDK Bridge 本机编译并加载成功。'
+    Write-Warning ("ATAS SDK binding is not complete: " + $_.Exception.Message)
+    Write-Warning 'Installer will continue. ATAS SDK Bridge must compile and load successfully before final acceptance.'
   }
 }
 
 $py=Get-ProjectPython
 if($py){
-  Write-Host "[Runtime] 检测到项目内 Python: $py"
+  Write-Host "[Runtime] Project Python detected: $py"
 } elseif(-not $SkipPython){
   & (Join-Path $PSScriptRoot 'install_runtime.ps1')
   $py=Get-ProjectPython
@@ -119,19 +120,19 @@ if($py){
 
 if($py){
   & $py (Join-Path $PSScriptRoot 'validate_config.py')
-  if($LASTEXITCODE -ne 0){ throw '配置校验失败。' }
+  if($LASTEXITCODE -ne 0){ throw 'Configuration validation failed.' }
   & $py (Join-Path $PSScriptRoot 'run_smoke_test.py')
-  if($LASTEXITCODE -ne 0){ throw 'Smoke test 失败。' }
+  if($LASTEXITCODE -ne 0){ throw 'Smoke test failed.' }
 } elseif($SkipPython){
-  Write-Warning '已指定 -SkipPython，且项目中未找到 Python runtime；启动系统前必须自行准备。'
+  Write-Warning 'SkipPython was specified and no project Python runtime was found. Prepare Python before starting the system.'
 } else {
-  throw 'Python runtime 准备失败。'
+  throw 'Python runtime preparation failed.'
 }
 
-Write-Host "`n=== 仓库侧自动安装步骤完成 ===" -ForegroundColor Green
+Write-Host "`n=== Automated installation steps completed ===" -ForegroundColor Green
 if($atasBound){
-  Write-Host '[ATAS] SDK Bridge 已针对本机 ATAS 程序集编译并部署。' -ForegroundColor Green
+  Write-Host '[ATAS] SDK Bridge compiled against the local ATAS assemblies and was deployed.' -ForegroundColor Green
 } else {
-  Write-Warning '[ATAS] SDK Bridge 仍需在本机完成编译/加载验证。'
+  Write-Warning '[ATAS] SDK Bridge still requires local compile/load verification.'
 }
-Write-Host '最终仍需实机完成：Rithmic Paper 连接、MT5 允许 127.0.0.1 Socket、ATAS 图表加载 Bridge、模拟盘开平仓/断线/周末验收。'
+Write-Host 'Machine acceptance still requires Rithmic Paper, MT5 localhost socket permission, ATAS chart Bridge loading, Demo trading, disconnect, and weekend tests.'
