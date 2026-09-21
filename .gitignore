@@ -9,6 +9,8 @@ Backup/*
 Runtime/python/
 Runtime/control.json
 Runtime/dashboard.token
+Runtime/acceptance-report.json
+Runtime/diagnostics/
 __pycache__/
 *.pyc
 *.pyo
