@@ -9,6 +9,12 @@ paths:
   backup: ./Backup
   runtime: ./Runtime
 
+engine:
+  host: 127.0.0.1
+  port: 17832
+  analysis_interval_seconds: 1.0
+  control_poll_seconds: 0.25
+
 trading:
   default_lot: 0.01
   weekend_protection: true
