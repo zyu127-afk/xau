@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from .analysis_engine import AnalysisEngine
 from .atas_client import AtasBridgeClient
 from .config import Settings
+from .control_runtime import control_loop
 from .database import Database
 from .dashboard_client import DashboardClient
 from .degradation import classify_degradation
@@ -20,8 +21,9 @@ from .positions import PositionBook
 from .price_alignment import PriceAlignmentEngine
 from .recovery import persist_guardian_slots, slot_from_guardian_state
 from .retention import prune_rolling_data
-from .review_scheduler import daily_review_loop
+from .review_scheduler import review_loop
 from .startup_checks import StartupChecker
+from .trade_recorder import TradeRecorder
 
 
 class Runtime:
@@ -45,7 +47,10 @@ class Runtime:
         self.log = logging.getLogger("system")
         self.ai_status = "OFFLINE"
         self.ai_latency_ms: float | None = None
+        self.ai_sleep = False
+        self.allow_new_entries = True
         self.analysis = AnalysisEngine(self)
+        self.trade_recorder = TradeRecorder(db)
         mgmt = settings.raw.get("position_management", {})
         self.position_manager = DynamicPositionManager(
             break_even_r=float(mgmt.get("break_even_r", 1.0)),
@@ -94,12 +99,18 @@ class Runtime:
         self.orderflow.ingest(event)
         payload = event.get("payload") or {}
         gc_price = payload.get("price") or payload.get("last")
+        mapped = None
+        if gc_price is not None:
+            try: mapped = self.alignment.map_gc_to_mt5(float(gc_price))
+            except (TypeError, ValueError): mapped = None
         strength = payload.get("strength")
         self.db.execute("INSERT INTO OrderFlowEvents(ts,event_type,gc_price,mt5_price,strength,payload) VALUES(?,?,?,?,?,?)",
-                        (now, str(event.get("type", "unknown")), gc_price, None, strength, json.dumps(event, ensure_ascii=False)))
+                        (now, str(event.get("type", "unknown")), gc_price, mapped, strength, json.dumps(event, ensure_ascii=False)))
 
     def _slot_dashboard(self, name: str) -> dict:
-        return asdict(slot_from_guardian_state(self.guardian.state, name))
+        slot = asdict(slot_from_guardian_state(self.guardian.state, name))
+        slot["current_price"] = self.guardian.state.bid if slot.get("side") == "BUY" else self.guardian.state.ask
+        return slot
 
     async def status_loop(self) -> None:
         while True:
@@ -118,11 +129,13 @@ class Runtime:
                     "mt5": "HEALTHY" if self.guardian.heartbeat_fresh() else "OFFLINE",
                     "atas": self.atas.state.health.value if atas_fresh else "OFFLINE",
                     "rithmic": "CONNECTED" if atas_fresh else "UNKNOWN",
-                    "ai": self.ai_status,
+                    "ai": "SLEEP" if self.ai_sleep else self.ai_status,
                     "ai_latency_ms": self.ai_latency_ms,
                     "mapping": "HEALTHY" if mapping_ok else mapping_reason,
                     "degradation_level": degradation.level,
                     "degradation_mode": degradation.name,
+                    "new_entries": "PAUSED" if not self.allow_new_entries else "ENABLED",
+                    "data_updated_at": datetime.now(timezone.utc).isoformat(),
                 },
                 "market": {
                     "symbol": self.guardian.state.symbol,
@@ -139,6 +152,7 @@ class Runtime:
                 "orderflow_assessment": assessment.label,
                 "positions": {"A": self._slot_dashboard("A"), "B": self._slot_dashboard("B")},
             })
+            self.trade_recorder.sync(self.guardian.state)
             now_mono = time.monotonic()
             if self.guardian.heartbeat_fresh() and now_mono - self._last_slot_persist >= 10.0:
                 persist_guardian_slots(self.db, self.guardian.state)
@@ -157,14 +171,22 @@ class Runtime:
             try:
                 if self.guardian.heartbeat_fresh() and self.guardian.state.bid is not None and self.guardian.state.ask is not None:
                     now = time.monotonic()
+                    assessment = self.orderflow.assess()
                     for name in ("A", "B"):
                         slot = slot_from_guardian_state(self.guardian.state, name)
                         if not slot.active:
                             continue
                         price = float(self.guardian.state.bid if slot.side.upper() == "BUY" else self.guardian.state.ask)
                         decision = self.position_manager.evaluate(slot, price)
+                        # Strong opposing order flow may accelerate an exit once the trade has positive excursion.
+                        if decision.action == "HOLD" and slot.mfe > 0:
+                            if slot.side.upper() == "BUY" and assessment.score <= -1.5:
+                                decision.action, decision.reason = "CLOSE", "strong opposing order flow"
+                            elif slot.side.upper() == "SELL" and assessment.score >= 1.5:
+                                decision.action, decision.reason = "CLOSE", "strong opposing order flow"
                         if decision.action == "HOLD" or now - self._last_management_action[name] < 2.0:
                             continue
+                        if decision.action == "CLOSE": self.trade_recorder.note_exit_reason(name, decision.reason)
                         command = self.position_manager.command(name, slot, decision, price)
                         ok, reason = await self.guardian.submit(command)
                         self._last_management_action[name] = now
@@ -202,18 +224,26 @@ class Runtime:
             raise RuntimeError("critical local startup checks failed")
         await self.guardian.start()
         await self._connect_mt5_data()
-        tasks = [
+        workers = [
             asyncio.create_task(self.guardian.serve_forever(), name="guardian"),
             asyncio.create_task(self.atas.run(), name="atas"),
             asyncio.create_task(self.status_loop(), name="status"),
             asyncio.create_task(self.position_management_loop(), name="position_management"),
             asyncio.create_task(self.retention_loop(), name="retention"),
-            asyncio.create_task(daily_review_loop(self.db), name="daily_review"),
+            asyncio.create_task(review_loop(self.db), name="reviews"),
             asyncio.create_task(self.analysis.loop(), name="analysis"),
         ]
+        controls = asyncio.create_task(control_loop(self), name="controls")
         try:
-            await asyncio.gather(*tasks)
+            done, _ = await asyncio.wait([controls, *workers], return_when=asyncio.FIRST_COMPLETED)
+            if controls not in done:
+                for task in done:
+                    if task.exception() is not None:
+                        raise task.exception()
         finally:
+            for task in [controls, *workers]:
+                if not task.done(): task.cancel()
+            await asyncio.gather(controls, *workers, return_exceptions=True)
             await self.atas.stop()
             await self.guardian.close()
             if self.mt5_data is not None:
