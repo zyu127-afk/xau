@@ -12,7 +12,8 @@ class TradeRecorder:
 
     A Guardian ACK proves the command was accepted, but the durable trade row is created
     from the following Guardian slot telemetry so entry price/lot/SL reflect the actual
-    broker-visible position rather than the requested values.
+    broker-visible position rather than the requested values. Realized PnL remains NULL
+    until a broker/MT5 source supplies a verified amount; unknown profit is never written as 0.
     """
 
     def __init__(self, db) -> None:
@@ -86,7 +87,7 @@ class TradeRecorder:
             """INSERT OR REPLACE INTO Trades(
                id,entry_time,side,lot,entry_price,original_sl,current_sl,current_tp,mfe,mae,pnl,
                entry_reason,market_regime,orderflow_state,ai_snapshot,payload)
-               VALUES(?,?,?,?,?,?,?,?,0,0,0,?,?,?,?,?)""",
+               VALUES(?,?,?,?,?,?,?,?,0,0,NULL,?,?,?,?,?)""",
             (
                 trade_id,
                 ts,
@@ -112,6 +113,34 @@ class TradeRecorder:
     def note_exit_reason(self, slot: str, reason: str) -> None:
         if slot in {"A", "B"} and reason:
             self.exit_reason_by_slot[slot] = reason
+
+    def note_realized_close(
+        self,
+        slot: str,
+        *,
+        pnl: float,
+        exit_price: float,
+        reason: str,
+        broker_payload: dict[str, Any] | None = None,
+    ) -> bool:
+        """Finalize a logical trade only from a verified broker/MT5 realized-PnL source."""
+        trade_id = self.trade_by_slot.get(slot)
+        if not trade_id:
+            return False
+        now = datetime.now(timezone.utc).isoformat()
+        self.db.execute(
+            "UPDATE Trades SET exit_time=?,exit_price=?,pnl=?,exit_reason=? WHERE id=? AND exit_time IS NULL",
+            (now, exit_price, pnl, reason, trade_id),
+        )
+        payload = {"slot": slot, "reason": reason, "exit_price": exit_price, "pnl": pnl, **(broker_payload or {})}
+        self.db.execute(
+            "INSERT INTO PositionEvents(ts,position_id,event_type,payload) VALUES(?,?,?,?)",
+            (now, trade_id, "BROKER_CLOSE", json.dumps(payload, ensure_ascii=False)),
+        )
+        self.trade_by_slot.pop(slot, None)
+        self.pending_open_by_slot.pop(slot, None)
+        self.exit_reason_by_slot.pop(slot, None)
+        return True
 
     def _register_from_guardian(self, slot: str, state) -> str | None:
         if not state.active or state.entry_price <= 0 or state.lot <= 0 or state.original_sl <= 0:
@@ -159,14 +188,14 @@ class TradeRecorder:
                         exit_price = float(guardian_state.bid)
                     elif side.upper() == "SELL" and getattr(guardian_state, "ask", None) is not None:
                         exit_price = float(guardian_state.ask)
-                reason = self.exit_reason_by_slot.pop(slot, "broker/Guardian closure reconciled")
+                reason = self.exit_reason_by_slot.pop(slot, "broker/Guardian closure reconciled; realized PnL pending broker verification")
                 self.db.execute(
                     "UPDATE Trades SET exit_time=?,exit_price=?,exit_reason=? WHERE id=? AND exit_time IS NULL",
                     (now, exit_price or None, reason, trade_id),
                 )
                 self.db.execute(
                     "INSERT INTO PositionEvents(ts,position_id,event_type,payload) VALUES(?,?,?,?)",
-                    (now, trade_id, "CLOSE", json.dumps({"slot": slot, "reason": reason, "exit_price": exit_price}, ensure_ascii=False)),
+                    (now, trade_id, "CLOSE_PENDING_PNL", json.dumps({"slot": slot, "reason": reason, "exit_price": exit_price}, ensure_ascii=False)),
                 )
                 self.trade_by_slot.pop(slot, None)
                 self.pending_open_by_slot.pop(slot, None)
