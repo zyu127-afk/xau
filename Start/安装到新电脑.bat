@@ -2,12 +2,16 @@
 setlocal
 cd /d "%~dp0.."
 echo ==========================================
-echo GoldTradingSystem 新电脑安装器 bootstrap
+echo GoldTradingSystem 新电脑安装器
 echo ==========================================
-if not exist Config\config.yaml copy Config\config.example.yaml Config\config.yaml >nul
-if not exist Config\secrets.local copy Config\secrets.local.example Config\secrets.local >nul
-echo [1/4] 配置模板已准备
-echo [2/4] 请由 Tools\detect_platforms.ps1 检测 MT5/ATAS 实例
-echo [3/4] 生产部署前必须编译 MT5 Guardian 与 ATAS Bridge
-echo [4/4] 完成后运行 Start\启动系统.bat
+powershell -NoProfile -ExecutionPolicy Bypass -File "%CD%\Tools\install.ps1"
+if errorlevel 1 (
+  echo.
+  echo [FAILED] 安装未完成，请查看上面的错误信息。
+  pause
+  exit /b 1
+)
+echo.
+echo [OK] 自动安装阶段完成。
+echo 下一步请按 Docs\MANUAL_SETUP.md 完成 MT5 / ATAS / Rithmic 实机步骤。
 pause
