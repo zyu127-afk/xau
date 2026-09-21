@@ -2,17 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from datetime import datetime, timedelta, timezone
 from .control import ControlFile
 from .guardian_protocol import GuardianCommand
 
 
 async def control_loop(runtime) -> None:
-    """Watch Runtime/control.json without blocking market-data or risk tasks.
+    """Watch Runtime/control.json without blocking data/risk tasks.
 
-    Returns when a normal full-stop is requested. A normal full-stop does NOT flatten positions.
-    Emergency close is explicit and still goes through Guardian.
+    Normal full-stop never means flatten. Emergency close is explicit and still goes through Guardian.
     """
     control = ControlFile(runtime.settings.paths.runtime / "control.json")
     log = logging.getLogger("system")
@@ -23,6 +21,8 @@ async def control_loop(runtime) -> None:
         runtime.allow_new_entries = not state.pause_new_entries
         if state.emergency_close_request and state.emergency_close_request != last_emergency:
             last_emergency = state.emergency_close_request
+            runtime.trade_recorder.note_exit_reason("A", "dashboard emergency close")
+            runtime.trade_recorder.note_exit_reason("B", "dashboard emergency close")
             now = datetime.now(timezone.utc)
             command = GuardianCommand(
                 command_id=f"emergency-{state.emergency_close_request}", action="CLOSE_ALL",
