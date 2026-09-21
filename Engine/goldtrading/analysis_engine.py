@@ -46,6 +46,24 @@ class AnalysisEngine:
         bucket = int(max(0.0, min(age, 9999.0)))
         return f"{a.label}|{a.score:.4f}|{a.raw.get('events',0)}|age{bucket}"
 
+    def _atas_fresh(self) -> bool:
+        return (
+            self.runtime.atas.state.health.value == "HEALTHY"
+            and self.runtime.atas.state.last_message_monotonic > 0
+            and (time.monotonic() - self.runtime.atas.state.last_message_monotonic)
+            <= float(self.settings.raw.get("atas", {}).get("stale_seconds", 5))
+        )
+
+    def _current_gc_price(self) -> float | None:
+        if not self.runtime.atas.state.latest:
+            return None
+        payload = self.runtime.atas.state.latest.get("payload") or {}
+        raw = payload.get("last", payload.get("price")) if isinstance(payload, dict) else None
+        try:
+            return None if raw is None else float(raw)
+        except (TypeError, ValueError):
+            return None
+
     def _ai_plan_to_intent(self, snapshot, payload: dict, side: str) -> TradeIntent | None:
         key = "entry_plan_long" if side == "BUY" else "entry_plan_short"
         plan = payload.get(key)
@@ -84,6 +102,8 @@ class AnalysisEngine:
     async def run_once(self) -> None:
         if not self.runtime.guardian.heartbeat_fresh() or not self.runtime.guardian.state.symbol:
             return
+        if self.runtime.guardian.state.weekend_protection:
+            return
         symbol = self.runtime.guardian.state.symbol
         provider = self.runtime.mt5_data
         if provider is None or not provider.connected:
@@ -107,13 +127,9 @@ class AnalysisEngine:
         modes = assess_modes(structure, potentials, breakout, orderflow)
         long_plan, short_plan = build_plans(mid, structure, zones, orderflow)
         positions = await asyncio.to_thread(provider.positions, symbol)
-        gc_price = None
-        if self.runtime.atas.state.latest:
-            payload0 = self.runtime.atas.state.latest.get("payload") or {}
-            raw_gc = payload0.get("last", payload0.get("price"))
-            if raw_gc is not None:
-                gc_price = float(raw_gc)
+        gc_price = self._current_gc_price()
         mapping = self.runtime.alignment.estimate()
+        mapping_ok, mapping_reason = self.runtime.mapping_quality()
         dynamic = {
             "mt5": {"symbol": symbol, "bid": bid, "ask": ask, "mid": mid, "positions": positions},
             "structure": {"regime": structure.regime.value, "bias": structure.bias.value,
@@ -126,7 +142,7 @@ class AnalysisEngine:
             "orderflow": {"label": orderflow.label, "score": orderflow.score, "evidence": orderflow.evidence, "raw": orderflow.raw,
                           "freshness_fingerprint": orderflow_fp},
             "local_plans": {"long": asdict(long_plan), "short": asdict(short_plan)},
-            "price_mapping": asdict(mapping) if mapping else None,
+            "price_mapping": {**asdict(mapping), "quality": mapping_reason} if mapping else {"quality": mapping_reason},
             "atas": {"health": self.runtime.atas.state.health.value, "instrument": self.runtime.atas.state.instrument,
                      "mbo_available": self.runtime.atas.state.mbo_available, "gc_price": gc_price},
         }
@@ -135,8 +151,8 @@ class AnalysisEngine:
                         (snapshot.snapshot_id, snapshot.snapshot_time.isoformat(), json.dumps(dynamic, ensure_ascii=False, default=str)))
         why: list[str] = []
         if structure.regime is MarketRegime.TRANSITION: why.append("市场处于转换状态")
-        if self.runtime.atas.state.health.value != "HEALTHY": why.append("ATAS订单流不是HEALTHY")
-        if not mapping: why.append("GC↔MT5映射仍在预热")
+        if not self._atas_fresh(): why.append("ATAS订单流不新鲜")
+        if not mapping_ok: why.append(f"GC↔MT5映射不可用: {mapping_reason}")
         if not any(x.ready for x in modes): why.append("三种核心交易模式均未完成本地确认")
         await self.runtime.dashboard.push({
             "regime": structure.regime.value, "bias": structure.bias.value,
@@ -150,11 +166,8 @@ class AnalysisEngine:
         if not self.settings.api_key or not self.system_prompt:
             self.runtime.ai_status = "OFFLINE"
             return
-        atas_fresh = self.runtime.atas.state.health.value == "HEALTHY" and (time.monotonic() - self.runtime.atas.state.last_message_monotonic) <= float(self.settings.raw.get("atas", {}).get("stale_seconds", 5))
-        min_corr = float(self.settings.raw.get("price_mapping", {}).get("min_correlation", 0.80))
-        mapping_ok = mapping is not None and abs(mapping.correlation) >= min_corr
-        if not atas_fresh or not mapping_ok:
-            reason = "ATAS数据不新鲜" if not atas_fresh else "GC↔MT5映射质量不足"
+        if not self._atas_fresh() or not mapping_ok:
+            reason = "ATAS数据不新鲜" if not self._atas_fresh() else f"GC↔MT5映射质量不足: {mapping_reason}"
             self.db.execute("INSERT INTO NoTradeEvents(ts,reason,payload) VALUES(?,?,?)",
                             (datetime.now(timezone.utc).isoformat(), reason, "{}"))
             return
@@ -175,6 +188,16 @@ class AnalysisEngine:
             self.db.execute("INSERT INTO NoTradeEvents(ts,reason,payload) VALUES(?,?,?)",
                             (datetime.now(timezone.utc).isoformat(), "AI confidence below local threshold", json.dumps(result.payload, ensure_ascii=False)))
             return
+        # AI is asynchronous: re-read all execution-critical state after it returns.
+        if not self.runtime.guardian.heartbeat_fresh() or self.runtime.guardian.state.weekend_protection:
+            return
+        if not self._atas_fresh():
+            return
+        mapping_ok2, mapping_reason2 = self.runtime.mapping_quality()
+        if not mapping_ok2:
+            self.db.execute("INSERT INTO NoTradeEvents(ts,reason,payload) VALUES(?,?,?)",
+                            (datetime.now(timezone.utc).isoformat(), f"AI_SIGNAL_STALE: mapping {mapping_reason2}", "{}"))
+            return
         tick2 = await asyncio.to_thread(provider.tick, symbol)
         positions2 = await asyncio.to_thread(provider.positions, symbol)
         bars2 = await self._fresh_structures(provider, symbol, ("H1", "M15", "M5", "M1"))
@@ -189,7 +212,8 @@ class AnalysisEngine:
         breakout2 = assess_breakout(combined["M5"], zones2)
         current_of = self.runtime.orderflow.assess()
         modes2 = assess_modes(structure2, potentials2, breakout2, current_of)
-        current = build_snapshot(mid2, gc_price, structure2.state_id, positions2, self._orderflow_fingerprint(), dynamic)
+        current_gc = self._current_gc_price()
+        current = build_snapshot(mid2, current_gc, structure2.state_id, positions2, self._orderflow_fingerprint(), dynamic)
         current.snapshot_id = snapshot.snapshot_id
         for side in ("BUY", "SELL"):
             intent = self._ai_plan_to_intent(snapshot, result.payload, side)
