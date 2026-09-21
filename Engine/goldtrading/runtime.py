@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import asdict
 from datetime import datetime, timezone
 from .analysis_engine import AnalysisEngine
 from .atas_client import AtasBridgeClient
@@ -14,8 +15,10 @@ from .degradation import classify_degradation
 from .guardian_server import GuardianServer
 from .mt5_data import MT5DataProvider
 from .orderflow import OrderFlowEngine
-from .price_alignment import PriceAlignmentEngine
+from .position_manager import DynamicPositionManager
 from .positions import PositionBook
+from .price_alignment import PriceAlignmentEngine
+from .recovery import persist_guardian_slots, slot_from_guardian_state
 from .retention import prune_rolling_data
 from .review_scheduler import daily_review_loop
 from .startup_checks import StartupChecker
@@ -39,6 +42,16 @@ class Runtime:
         self.log = logging.getLogger("system")
         self.ai_status = "OFFLINE"
         self.analysis = AnalysisEngine(self)
+        mgmt = settings.raw.get("position_management", {})
+        self.position_manager = DynamicPositionManager(
+            break_even_r=float(mgmt.get("break_even_r", 1.0)),
+            lock_r=float(mgmt.get("lock_r", 1.5)),
+            lock_fraction_r=float(mgmt.get("lock_fraction_r", 0.5)),
+            giveback_trigger_r=float(mgmt.get("giveback_trigger_r", 2.0)),
+            max_giveback_fraction=float(mgmt.get("max_giveback_fraction", 0.55)),
+        )
+        self._last_management_action: dict[str, float] = {"A": 0.0, "B": 0.0}
+        self._last_slot_persist = 0.0
 
     def logical_slot_active(self, slot: str) -> bool:
         if slot.upper() == "A": return self.guardian.state.slot_a_active
@@ -47,8 +60,11 @@ class Runtime:
 
     async def _on_guardian(self, parts: list[str]) -> None:
         now = datetime.now(timezone.utc).isoformat()
-        self.db.execute("INSERT INTO SystemEvents(ts,level,component,event,payload) VALUES(?,?,?,?,?)",
-                        (now, "INFO", "MT5", parts[0] if parts else "UNKNOWN", json.dumps(parts, ensure_ascii=False)))
+        kind = parts[0] if parts else "UNKNOWN"
+        # Heartbeats are intentionally not copied into SystemEvents at 1 Hz; compact slot snapshots are persisted separately.
+        if kind != "HB":
+            self.db.execute("INSERT INTO SystemEvents(ts,level,component,event,payload) VALUES(?,?,?,?,?)",
+                            (now, "INFO", "MT5", kind, json.dumps(parts, ensure_ascii=False)))
 
     async def _on_atas(self, event: dict) -> None:
         self.orderflow.ingest(event)
@@ -58,6 +74,9 @@ class Runtime:
         strength = payload.get("strength")
         self.db.execute("INSERT INTO OrderFlowEvents(ts,event_type,gc_price,mt5_price,strength,payload) VALUES(?,?,?,?,?,?)",
                         (now, str(event.get("type", "unknown")), gc_price, None, strength, json.dumps(event, ensure_ascii=False)))
+
+    def _slot_dashboard(self, name: str) -> dict:
+        return asdict(slot_from_guardian_state(self.guardian.state, name))
 
     async def status_loop(self) -> None:
         while True:
@@ -91,12 +110,35 @@ class Runtime:
                     "mapping_correlation": estimate.correlation if estimate else None,
                 },
                 "orderflow_assessment": assessment.label,
-                "positions": {
-                    "A": {"active": self.guardian.state.slot_a_active},
-                    "B": {"active": self.guardian.state.slot_b_active},
-                },
+                "positions": {"A": self._slot_dashboard("A"), "B": self._slot_dashboard("B")},
             })
+            if self.guardian.heartbeat_fresh() and time.monotonic() - self._last_slot_persist >= 10.0:
+                persist_guardian_slots(self.db, self.guardian.state)
+                self._last_slot_persist = time.monotonic()
             await asyncio.sleep(1.0)
+
+    async def position_management_loop(self) -> None:
+        while True:
+            try:
+                if self.guardian.heartbeat_fresh() and self.guardian.state.bid is not None and self.guardian.state.ask is not None:
+                    now = time.monotonic()
+                    for name in ("A", "B"):
+                        slot = slot_from_guardian_state(self.guardian.state, name)
+                        if not slot.active:
+                            continue
+                        price = float(self.guardian.state.bid if slot.side.upper() == "BUY" else self.guardian.state.ask)
+                        decision = self.position_manager.evaluate(slot, price)
+                        if decision.action == "HOLD" or now - self._last_management_action[name] < 2.0:
+                            continue
+                        command = self.position_manager.command(name, slot, decision, price)
+                        ok, reason = await self.guardian.submit(command)
+                        self._last_management_action[name] = now
+                        self.db.execute("INSERT INTO PositionEvents(ts,position_id,event_type,payload) VALUES(?,?,?,?)",
+                                        (datetime.now(timezone.utc).isoformat(), name, f"MANAGE_{decision.action}",
+                                         json.dumps({"accepted": ok, "guardian_reason": reason, "decision": asdict(decision), "slot": asdict(slot)}, ensure_ascii=False)))
+            except Exception:
+                logging.getLogger("errors").exception("position management loop failed")
+            await asyncio.sleep(0.5)
 
     async def retention_loop(self) -> None:
         while True:
@@ -117,10 +159,11 @@ class Runtime:
             self.log.warning("MT5 Python data adapter unavailable; Guardian protection remains independent")
 
     async def run(self) -> None:
-        checks = StartupChecker(self.settings).run_local_checks()
+        checker = StartupChecker(self.settings)
+        checks = checker.run_local_checks()
         for check in checks:
             (self.log.info if check.ok else self.log.warning)("startup check %s ok=%s critical=%s detail=%s", check.name, check.ok, check.critical, check.detail)
-        if not StartupChecker.critical_ok(checks):
+        if not checker.critical_ok(checks):
             raise RuntimeError("critical local startup checks failed")
         await self.guardian.start()
         await self._connect_mt5_data()
@@ -128,6 +171,7 @@ class Runtime:
             asyncio.create_task(self.guardian.serve_forever(), name="guardian"),
             asyncio.create_task(self.atas.run(), name="atas"),
             asyncio.create_task(self.status_loop(), name="status"),
+            asyncio.create_task(self.position_management_loop(), name="position_management"),
             asyncio.create_task(self.retention_loop(), name="retention"),
             asyncio.create_task(daily_review_loop(self.db), name="daily_review"),
             asyncio.create_task(self.analysis.loop(), name="analysis"),
