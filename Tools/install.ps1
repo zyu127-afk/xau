@@ -6,6 +6,14 @@ New-Item -ItemType Directory -Force -Path $configDir | Out-Null
 if(-not (Test-Path (Join-Path $configDir 'config.yaml'))){ Copy-Item (Join-Path $configDir 'config.example.yaml') (Join-Path $configDir 'config.yaml') }
 if(-not (Test-Path (Join-Path $configDir 'secrets.local'))){ Copy-Item (Join-Path $configDir 'secrets.local.example') (Join-Path $configDir 'secrets.local') }
 
+function Get-ProjectPython {
+  $embedded=Join-Path $root 'Runtime\python\python.exe'
+  if(Test-Path $embedded){ return $embedded }
+  $venv=Join-Path $root 'Runtime\python\Scripts\python.exe'
+  if(Test-Path $venv){ return $venv }
+  return $null
+}
+
 Write-Host '=== GoldTradingSystem 新电脑安装器 ===' -ForegroundColor Cyan
 Write-Host "主目录: $root"
 
@@ -76,14 +84,23 @@ Write-Host '[Config] 已写入 Config/paths.yaml'
 
 & (Join-Path $PSScriptRoot 'deploy_mt5.ps1') -TerminalDataPath $selected.DataPath -MetaEditorPath $selected.MetaEditor
 
-if(-not $SkipPython){
+$py=Get-ProjectPython
+if($py){
+  Write-Host "[Runtime] 检测到项目内 Python: $py"
+} elseif(-not $SkipPython){
   & (Join-Path $PSScriptRoot 'install_runtime.ps1')
+  $py=Get-ProjectPython
 }
 
-$py=Join-Path $root 'Runtime\python\Scripts\python.exe'
-if(Test-Path $py){
+if($py){
   & $py (Join-Path $PSScriptRoot 'validate_config.py')
+  if($LASTEXITCODE -ne 0){ throw '配置校验失败。' }
   & $py (Join-Path $PSScriptRoot 'run_smoke_test.py')
+  if($LASTEXITCODE -ne 0){ throw 'Smoke test 失败。' }
+} elseif($SkipPython){
+  Write-Warning '已指定 -SkipPython，且项目中未找到 Python runtime；启动系统前必须自行准备。'
+} else {
+  throw 'Python runtime 准备失败。'
 }
 
 Write-Host "`n=== 仓库侧自动安装步骤完成 ===" -ForegroundColor Green
