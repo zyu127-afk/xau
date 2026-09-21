@@ -1,0 +1,9 @@
+Config/secrets.local
+Data/*.db
+Data/raw/
+Logs/*.log
+Backup/*
+Runtime/python/
+__pycache__/
+*.pyc
+.env
