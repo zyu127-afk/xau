@@ -7,15 +7,17 @@
 1. 将整个 `GoldTradingSystem` 文件夹复制到任意本地磁盘。
 2. 双击 `Start/安装到新电脑.bat`。
 3. 如果检测到多个 MT5，选择实际要交易的 MT5 实例。
-4. 安装器会生成本机专用 `Config/paths.yaml`、准备 `Config/config.yaml` 与 `Config/secrets.local`、部署 Guardian 源码并尝试 MetaEditor 编译，同时创建项目 Python 环境。
+4. 安装器会生成本机专用 `Config/paths.yaml`、准备 `Config/config.yaml` 与 `Config/secrets.local`、部署 Guardian 源码并尝试 MetaEditor 编译。
+5. 如果检测到 ATAS，安装器会自动寻找本机 `ATAS.Indicators.dll` / `ATAS.DataFeedsCore.dll`，尝试匹配 .NET 8/10 编译 SDK Bridge，并且只有真实编译成功后才部署 DLL。
+6. Portable 包直接使用项目内嵌 Python；Dev 包若没有项目 Python，则安装器会准备运行环境。
 
 个人路径、真实 API Key、数据库和日志不应提交到 GitHub。
 
 ## 2. MT5 Guardian
 
 1. 启动所选择的 MT5 模拟账户。
-2. 在 MetaEditor 打开部署后的 `MQL5/Experts/GoldTradingSystem/GoldTradingGuardian.mq5`，确认编译为 0 errors。
-3. 把 Guardian 挂到实际要交易的黄金图表。系统使用当前 `_Symbol`，不要把图表名称改成固定 XAUUSD。
+2. 检查 `Runtime/mt5-binding.json`；`ex5_exists=true` 才表示安装器实际生成过 EX5。若没有，则在 MetaEditor 打开部署后的 `MQL5/Experts/GoldTradingSystem/GoldTradingGuardian.mq5` 并确认 0 errors。
+3. 把 Guardian 挂到实际要交易的黄金图表。系统使用当前 `_Symbol`，不要把图表名称写死为 XAUUSD。
 4. 开启 Algo Trading。
 5. 在 MT5 的 Expert Advisors / 网络或 Socket 许可中允许本机 `127.0.0.1` / `localhost`（Engine 默认端口 17832）。
 6. EA 参数保持 `InpMaxLogicalPositions=2`；手数、Spread 上限和周末提前量按账户实际情况设置。
@@ -25,9 +27,9 @@
 
 1. 启动 ATAS，并连接 Rithmic Paper/模拟环境。
 2. 打开当前真正要采集的 GC 黄金期货合约图表。不要在代码里固定月份合约。
-3. 使用本机安装的 ATAS SDK 引用编译 `ATAS/GoldTradingDataBridge` 的 SDK 适配层，并将 DataBridge 加载到该图表/插件环境。
-4. DataBridge 必须从当前图表读取 instrument；切换合约时必须发出 `instrument_changed`。
-5. 默认 `Config/config.yaml -> atas.require_mbo: false`。如果当前 Rithmic 权限没有 MBO，MBO 专属队列/补单/撤单字段保持 `null`/缺失，绝不伪造。只有确认行情权限真的提供 MBO 后才改为 `true`。
+3. 检查 `Runtime/atas-binding.json`。`deployed=true` 且 `bridge_dll_exists_now=true` 表示本机 SDK Bridge 已真实编译并部署；若未完成，重新运行 `Tools/deploy_atas.ps1`，失败时查看 `Logs/atas_sdk_build_*.log`。不要手工复制未验证 DLL。
+4. 在当前 GC 图表中加载 `GoldTradingSystem DataBridge` 指标/Bridge。DataBridge 必须从当前图表读取 instrument；切换合约时必须发出 `instrument_changed`。
+5. 默认 `Config/config.yaml -> atas.require_mbo: false`，ATAS 指标端 `EnableMbo=false`。只有 `SubscribeMarketByOrderData()` 在当前 Rithmic 权限下真正成功后，才允许启用 MBO；否则 order-id/queue/replenishment/order_count 等 MBO 专属字段保持 `null`/缺失，绝不伪造。
 6. DataBridge 只发送订单流数据到 `127.0.0.1:17831`，不得直接向 MT5 下单。
 
 ## 4. DeepSeek / OpenAI-compatible API
@@ -50,9 +52,15 @@ API_KEY=你的真实Key
 
 不要把 Key 发到 GitHub、日志、Dashboard 或普通备份。
 
-## 5. 启动
+## 5. 启动与只读预检
 
-双击：
+先双击：
+
+`Start/本机验收.bat`
+
+它只做依赖、绑定、端口与可选 MT5 只读连接检查，不发送订单；结果写入 `Runtime/acceptance-report.json`，报告不包含 API Key、MT5 登录号或完整本机安装路径。
+
+再双击：
 
 `Start/启动系统.bat`
 
@@ -80,5 +88,6 @@ API_KEY=你的真实Key
 10. ATAS/Rithmic 断开后，已有仓仍可平仓/改 SL/执行周末保护。
 11. 周五真实 Session 前进入本地周末保护，撤单、平掉系统仓位，并确认 Positions=0、Orders=0。
 12. Dashboard、MT5 HUD、日志、SQLite、MFE/MAE、NO TRADE、复盘记录一致。
+13. 把整个项目复制到另一个本地路径，再跑一次安装器/预检，确认所有配置和运行路径仍为相对/本机生成。
 
 全部模拟盘项目通过后，才进入下一阶段。仓库代码或 CI 通过不能替代这些实机验收。
