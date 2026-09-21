@@ -22,13 +22,13 @@ function Test-TrackedProcess($item){
 }
 
 function Write-StopRequest {
+  # A normal stop is deliberately incapable of inheriting a stale emergency close request.
   $state=@{ai_sleep=$false;pause_new_entries=$false;stop_system=$true;emergency_close_request=''}
   if(Test-Path $controlFile){
     try {
       $existing=Get-Content $controlFile -Raw | ConvertFrom-Json
       if($null -ne $existing.ai_sleep){ $state.ai_sleep=[bool]$existing.ai_sleep }
       if($null -ne $existing.pause_new_entries){ $state.pause_new_entries=[bool]$existing.pause_new_entries }
-      if($null -ne $existing.emergency_close_request){ $state.emergency_close_request=[string]$existing.emergency_close_request }
     } catch { }
   }
   $tmp=Join-Path $runtime ('control-'+[guid]::NewGuid().ToString('N')+'.json')
