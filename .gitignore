@@ -12,6 +12,7 @@ Runtime/dashboard.token
 Runtime/acceptance-report.json
 Runtime/mt5-binding.json
 Runtime/atas-binding.json
+Runtime/processes.json
 Runtime/diagnostics/
 **/bin/
 **/obj/
