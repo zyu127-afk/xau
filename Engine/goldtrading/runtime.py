@@ -35,7 +35,10 @@ class Runtime:
         mt5 = settings.raw.get("mt5", {})
         atas = settings.raw.get("atas", {})
         self.guardian = GuardianServer(str(mt5.get("host", "127.0.0.1")), int(mt5.get("port", 17832)), self._on_guardian)
-        self.atas = AtasBridgeClient(str(atas.get("host", "127.0.0.1")), int(atas.get("port", 17831)), self._on_atas)
+        self.atas = AtasBridgeClient(
+            str(atas.get("host", "127.0.0.1")), int(atas.get("port", 17831)), self._on_atas,
+            require_mbo=bool(atas.get("require_mbo", False)),
+        )
         terminal_path = str(mt5.get("terminal_path", "")).strip() or None
         self.mt5_data = MT5DataProvider(terminal_path) if bool(mt5.get("python_data_adapter", True)) else None
         self.dashboard = DashboardClient(f"http://127.0.0.1:{int(settings.raw.get('ui',{}).get('port',17840))}")
