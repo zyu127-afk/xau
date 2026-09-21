@@ -6,7 +6,7 @@ param(
 $ErrorActionPreference='Stop'
 $root=(Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 if([string]::IsNullOrWhiteSpace($TerminalDataPath)){
-  throw 'TerminalDataPath is required. Run Start/安装到新电脑.bat and choose the intended MT5 instance.'
+  throw 'TerminalDataPath is required. Run the new-computer installer and choose the intended MT5 instance.'
 }
 if(-not (Test-Path $TerminalDataPath)){ throw "MT5 data path not found: $TerminalDataPath" }
 $experts=Join-Path $TerminalDataPath 'MQL5\Experts\GoldTradingSystem'
