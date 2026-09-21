@@ -215,7 +215,7 @@ bool ExistingNettingSideCompatible(const string side);
 void CaptureSlotAfterOpen(const string slot,const string side,const double lot,const double sl,const double tp);
 bool CloseLogicalSlot(const string slot,const string reason);
 bool ModifyLogicalStops(const string slot,const double new_sl,const double new_tp);
-ulnumber GuardianFindPositionTicket(const string slot);
+ulong GuardianFindPositionTicket(const string slot);
 
 bool PositionHasServerStopForSlot(const string slot)
 {
