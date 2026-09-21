@@ -19,6 +19,7 @@ async def control_loop(runtime) -> None:
         state = control.read()
         runtime.ai_sleep = state.ai_sleep
         runtime.allow_new_entries = not state.pause_new_entries
+        runtime.guardian.new_entries_allowed = runtime.allow_new_entries and not runtime.ai_sleep
         if state.emergency_close_request and state.emergency_close_request != last_emergency:
             last_emergency = state.emergency_close_request
             runtime.trade_recorder.note_exit_reason("A", "dashboard emergency close")
