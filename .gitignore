@@ -10,7 +10,10 @@ Runtime/python/
 Runtime/control.json
 Runtime/dashboard.token
 Runtime/acceptance-report.json
+Runtime/atas-binding.json
 Runtime/diagnostics/
+**/bin/
+**/obj/
 __pycache__/
 *.pyc
 *.pyo
