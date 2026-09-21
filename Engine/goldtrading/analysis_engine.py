@@ -64,6 +64,12 @@ class AnalysisEngine:
         except (TypeError, ValueError):
             return None
 
+    def _record_no_trade(self, reason: str, payload: dict | None = None) -> None:
+        self.db.execute(
+            "INSERT INTO NoTradeEvents(ts,reason,payload) VALUES(?,?,?)",
+            (datetime.now(timezone.utc).isoformat(), reason, json.dumps(payload or {}, ensure_ascii=False, default=str)),
+        )
+
     def _ai_plan_to_intent(self, snapshot, payload: dict, side: str) -> TradeIntent | None:
         key = "entry_plan_long" if side == "BUY" else "entry_plan_short"
         plan = payload.get(key)
@@ -130,11 +136,12 @@ class AnalysisEngine:
         gc_price = self._current_gc_price()
         mapping = self.runtime.alignment.estimate()
         mapping_ok, mapping_reason = self.runtime.mapping_quality()
+        tf_structures = {k: asdict(v) for k, v in structure.structures.items()}
         dynamic = {
             "mt5": {"symbol": symbol, "bid": bid, "ask": ask, "mid": mid, "positions": positions},
             "structure": {"regime": structure.regime.value, "bias": structure.bias.value,
                           "state_id": structure.state_id, "reasons": structure.reasons,
-                          "timeframes": {k: asdict(v) for k, v in structure.structures.items()}},
+                          "timeframes": tf_structures},
             "zones": [self._zone_dict(z) for z in zones],
             "potential_zones": [asdict(x) for x in potentials],
             "breakout": asdict(breakout),
@@ -154,8 +161,11 @@ class AnalysisEngine:
         if not self._atas_fresh(): why.append("ATAS订单流不新鲜")
         if not mapping_ok: why.append(f"GC↔MT5映射不可用: {mapping_reason}")
         if not any(x.ready for x in modes): why.append("三种核心交易模式均未完成本地确认")
+        if self.runtime.ai_sleep: why.append("AI Sleep：继续采集与本地分析，不调用AI、不执行AI新仓")
+        if not self.runtime.allow_new_entries: why.append("用户已暂停新开仓")
         await self.runtime.dashboard.push({
             "regime": structure.regime.value, "bias": structure.bias.value,
+            "structures": tf_structures,
             "supports": [self._zone_dict(z) for z in zones if z.kind == "SUPPORT"][:3],
             "resistances": [self._zone_dict(z) for z in zones if z.kind == "RESISTANCE"][:3],
             "zones": [asdict(x) for x in potentials],
@@ -163,13 +173,16 @@ class AnalysisEngine:
             "long_plan": asdict(long_plan), "short_plan": asdict(short_plan),
             "why_no_trade": why or ["等待AI/执行确认"],
         })
+
+        if self.runtime.ai_sleep:
+            self.runtime.ai_status = "SLEEP"
+            return
         if not self.settings.api_key or not self.system_prompt:
             self.runtime.ai_status = "OFFLINE"
             return
         if not self._atas_fresh() or not mapping_ok:
             reason = "ATAS数据不新鲜" if not self._atas_fresh() else f"GC↔MT5映射质量不足: {mapping_reason}"
-            self.db.execute("INSERT INTO NoTradeEvents(ts,reason,payload) VALUES(?,?,?)",
-                            (datetime.now(timezone.utc).isoformat(), reason, "{}"))
+            self._record_no_trade(reason)
             return
         now = datetime.now(timezone.utc)
         if self.last_ai_at and (now - self.last_ai_at).total_seconds() < self.ai_interval:
@@ -181,13 +194,20 @@ class AnalysisEngine:
         self.db.execute("INSERT INTO AIAnalysis(ts,snapshot_id,status,payload) VALUES(?,?,?,?)",
                         (datetime.now(timezone.utc).isoformat(), snapshot.snapshot_id, result.status,
                          json.dumps({"payload": result.payload, "error": result.error, "latency_ms": result.latency_ms}, ensure_ascii=False)))
+        await self.runtime.dashboard.push({
+            "ai_analysis": result.payload or {"status": result.status, "error": result.error},
+        })
         degradation = classify_degradation(mt5_alive=self.runtime.guardian.heartbeat_fresh(), atas_health=self.runtime.atas.state.health.value, ai_health=result.status)
         if not degradation.allow_new_ai_trades or not result.payload or result.status not in {"HEALTHY", "SLOW"}:
+            self._record_no_trade(f"AI不可执行: {result.status}", {"error": result.error})
             return
         if float(result.payload.get("confidence", 0.0)) < self.min_ai_confidence:
-            self.db.execute("INSERT INTO NoTradeEvents(ts,reason,payload) VALUES(?,?,?)",
-                            (datetime.now(timezone.utc).isoformat(), "AI confidence below local threshold", json.dumps(result.payload, ensure_ascii=False)))
+            self._record_no_trade("AI confidence below local threshold", result.payload)
             return
+        if not self.runtime.allow_new_entries or self.runtime.ai_sleep:
+            self._record_no_trade("用户控制禁止AI新开仓")
+            return
+
         # AI is asynchronous: re-read all execution-critical state after it returns.
         if not self.runtime.guardian.heartbeat_fresh() or self.runtime.guardian.state.weekend_protection:
             return
@@ -195,8 +215,7 @@ class AnalysisEngine:
             return
         mapping_ok2, mapping_reason2 = self.runtime.mapping_quality()
         if not mapping_ok2:
-            self.db.execute("INSERT INTO NoTradeEvents(ts,reason,payload) VALUES(?,?,?)",
-                            (datetime.now(timezone.utc).isoformat(), f"AI_SIGNAL_STALE: mapping {mapping_reason2}", "{}"))
+            self._record_no_trade(f"AI_SIGNAL_STALE: mapping {mapping_reason2}")
             return
         tick2 = await asyncio.to_thread(provider.tick, symbol)
         positions2 = await asyncio.to_thread(provider.positions, symbol)
@@ -223,25 +242,28 @@ class AnalysisEngine:
             max_move = float(validity.get("max_price_move", max(1.0, abs(ask - bid) * 10)))
             ok, stale_reason = validate_intent(intent, snapshot, current, max_move)
             if not ok:
-                self.db.execute("INSERT INTO NoTradeEvents(ts,reason,payload) VALUES(?,?,?)",
-                                (datetime.now(timezone.utc).isoformat(), stale_reason, "{}")); continue
+                self._record_no_trade(stale_reason)
+                continue
             ready_modes = [m for m in modes2 if m.ready and m.side == side]
             if not ready_modes:
-                self.db.execute("INSERT INTO NoTradeEvents(ts,reason,payload) VALUES(?,?,?)",
-                                (datetime.now(timezone.utc).isoformat(), f"{side}没有满足趋势回调/突破回踩/极值反转模式", "{}")); continue
+                self._record_no_trade(f"{side}没有满足趋势回调/突破回踩/极值反转模式")
+                continue
             if structure2.regime in {MarketRegime.TREND, MarketRegime.EXTREME_TREND}:
                 if side == "BUY" and structure2.bias is not Bias.LONG: continue
                 if side == "SELL" and structure2.bias is not Bias.SHORT: continue
             if side == "BUY" and current_of.score < 0.45: continue
             if side == "SELL" and current_of.score > -0.45: continue
             if self.runtime.logical_slot_active("A") and self.runtime.logical_slot_active("B"):
-                self.db.execute("INSERT INTO NoTradeEvents(ts,reason,payload) VALUES(?,?,?)",
-                                (datetime.now(timezone.utc).isoformat(), "Position A/B already occupied", "{}")); return
+                self._record_no_trade("Position A/B already occupied")
+                return
             est_sl = abs(mid2 - intent.stop_loss)
             worthwhile, reason = actual_space_is_worthwhile(mid2, side, zones2, abs(float(tick2["ask"]) - float(tick2["bid"])), est_sl)
             if not worthwhile:
-                self.db.execute("INSERT INTO NoTradeEvents(ts,reason,payload) VALUES(?,?,?)",
-                                (datetime.now(timezone.utc).isoformat(), reason, "{}")); continue
+                self._record_no_trade(reason)
+                continue
+            if not self.runtime.guardian.new_entries_allowed:
+                self._record_no_trade("本地控制网关禁止新开仓")
+                return
             slot = "A" if not self.runtime.logical_slot_active("A") else "B"
             mode_names = ",".join(m.mode.value for m in ready_modes)
             command = GuardianCommand(intent.intent_id, "OPEN", slot, side, intent.lot, intent.stop_loss, intent.take_profit,
@@ -258,4 +280,4 @@ class AnalysisEngine:
                 await self.run_once()
             except Exception:
                 logging.getLogger("errors").exception("analysis loop failed")
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(float(self.settings.raw.get("engine", {}).get("analysis_interval_seconds", 1.0)))
