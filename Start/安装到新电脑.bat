@@ -2,16 +2,16 @@
 setlocal
 cd /d "%~dp0.."
 echo ==========================================
-echo GoldTradingSystem 新电脑安装器
+echo GoldTradingSystem installer
 echo ==========================================
 powershell -NoProfile -ExecutionPolicy Bypass -File "%CD%\Tools\install.ps1"
 if errorlevel 1 (
   echo.
-  echo [FAILED] 安装未完成，请查看上面的错误信息。
+  echo [FAILED] Installation did not complete. Review the error above.
   pause
   exit /b 1
 )
 echo.
-echo [OK] 自动安装阶段完成。
-echo 下一步请按 Docs\MANUAL_SETUP.md 完成 MT5 / ATAS / Rithmic 实机步骤。
+echo [OK] Automated installation stage completed.
+echo Next: follow Docs\MANUAL_SETUP.md for MT5 / ATAS / Rithmic machine acceptance.
 pause
