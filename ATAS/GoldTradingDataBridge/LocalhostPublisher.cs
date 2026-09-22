@@ -25,47 +25,100 @@ public sealed class LocalhostPublisher : IAsyncDisposable
         _listener.Start();
         var accept = AcceptLoopAsync(_cts.Token);
         var broadcast = BroadcastLoopAsync(_cts.Token);
-        await Task.WhenAll(accept, broadcast);
+        await Task.WhenAll(accept, broadcast).ConfigureAwait(false);
     }
 
     private async Task AcceptLoopAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
-            var client = await _listener.AcceptTcpClientAsync(ct);
+            TcpClient client;
+            try
+            {
+                client = await _listener.AcceptTcpClientAsync(ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (ObjectDisposedException) when (ct.IsCancellationRequested)
+            {
+                break;
+            }
+
+            client.NoDelay = true;
             lock (_clients) _clients.Add(client);
+
+            // Prove the transport is alive immediately after connect. Do not wait for
+            // market callbacks or the next periodic heartbeat before sending data.
+            var hello = new BridgeMessage(
+                "transport_hello",
+                DateTimeOffset.UtcNow,
+                string.Empty,
+                false,
+                new { health = "WARMING_UP" });
+            if (!await TryWriteAsync(client, hello, ct).ConfigureAwait(false))
+                RemoveClient(client);
         }
     }
 
     private async Task BroadcastLoopAsync(CancellationToken ct)
     {
-        await foreach (var message in _messages.Reader.ReadAllAsync(ct))
+        try
         {
-            var bytes = JsonSerializer.SerializeToUtf8Bytes(message);
-            byte[] line = new byte[bytes.Length + 1];
-            Buffer.BlockCopy(bytes, 0, line, 0, bytes.Length);
-            line[^1] = (byte)'\n';
-            List<TcpClient> clients;
-            lock (_clients) clients = _clients.ToList();
-            foreach (var client in clients)
+            await foreach (var message in _messages.Reader.ReadAllAsync(ct).ConfigureAwait(false))
             {
-                try { await client.GetStream().WriteAsync(line, ct); }
-                catch
+                List<TcpClient> clients;
+                lock (_clients) clients = _clients.ToList();
+                foreach (var client in clients)
                 {
-                    lock (_clients) _clients.Remove(client);
-                    client.Dispose();
+                    if (!await TryWriteAsync(client, message, ct).ConfigureAwait(false))
+                        RemoveClient(client);
                 }
             }
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+        }
+    }
+
+    private static async Task<bool> TryWriteAsync(TcpClient client, BridgeMessage message, CancellationToken ct)
+    {
+        try
+        {
+            var bytes = JsonSerializer.SerializeToUtf8Bytes(message);
+            var line = new byte[bytes.Length + 1];
+            Buffer.BlockCopy(bytes, 0, line, 0, bytes.Length);
+            line[^1] = (byte)'\n';
+            await client.GetStream().WriteAsync(line.AsMemory(), ct).ConfigureAwait(false);
+            await client.GetStream().FlushAsync(ct).ConfigureAwait(false);
+            return true;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return false;
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        {
+            // A bad/disconnected client must never terminate the publisher loop.
+            return false;
+        }
+    }
+
+    private void RemoveClient(TcpClient client)
+    {
+        lock (_clients) _clients.Remove(client);
+        try { client.Dispose(); } catch { }
     }
 
     public async ValueTask DisposeAsync()
     {
         _cts.Cancel();
+        _messages.Writer.TryComplete();
         _listener.Stop();
         List<TcpClient> clients;
         lock (_clients) clients = _clients.ToList();
-        foreach (var client in clients) client.Dispose();
+        foreach (var client in clients) RemoveClient(client);
         _cts.Dispose();
         await Task.CompletedTask;
     }
