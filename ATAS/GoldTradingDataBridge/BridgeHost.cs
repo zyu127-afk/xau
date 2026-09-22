@@ -21,9 +21,12 @@ public sealed class BridgeHost : IAsyncDisposable
 
     public void Start()
     {
-        _publisherTask = _publisher.RunAsync();
+        // ATAS indicators execute on platform/UI contexts. Keep all long-lived socket
+        // and heartbeat work on the thread pool so a vendor SynchronizationContext
+        // cannot starve continuations after the indicator has initialized.
+        _publisherTask = Task.Run(() => _publisher.RunAsync());
         _source.Start();
-        _heartbeatTask = HeartbeatLoopAsync(_cts.Token);
+        _heartbeatTask = Task.Run(() => HeartbeatLoopAsync(_cts.Token));
     }
 
     private void OnMessage(BridgeMessage message) => _publisher.Publish(message);
@@ -33,10 +36,19 @@ public sealed class BridgeHost : IAsyncDisposable
         while (!ct.IsCancellationRequested)
         {
             _publisher.Publish(new BridgeMessage(
-                "heartbeat", DateTimeOffset.UtcNow, _source.CurrentInstrument, _source.MboAvailable,
+                "heartbeat",
+                DateTimeOffset.UtcNow,
+                _source.CurrentInstrument,
+                _source.MboAvailable,
                 new { health = string.IsNullOrWhiteSpace(_source.CurrentInstrument) ? "WARMING_UP" : "HEALTHY" }));
-            try { await Task.Delay(TimeSpan.FromSeconds(1), ct); }
-            catch (OperationCanceledException) when (ct.IsCancellationRequested) { break; }
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                break;
+            }
         }
     }
 
@@ -45,11 +57,22 @@ public sealed class BridgeHost : IAsyncDisposable
         _cts.Cancel();
         _source.Stop();
         _source.Message -= OnMessage;
+
         if (_heartbeatTask is not null)
         {
-            try { await _heartbeatTask; } catch (OperationCanceledException) { }
+            try { await _heartbeatTask.ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
         }
-        await _publisher.DisposeAsync();
+
+        await _publisher.DisposeAsync().ConfigureAwait(false);
+
+        if (_publisherTask is not null)
+        {
+            try { await _publisherTask.ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
+            catch (ObjectDisposedException) { }
+        }
+
         _cts.Dispose();
     }
 }
