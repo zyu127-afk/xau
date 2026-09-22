@@ -76,6 +76,8 @@ jobs:
               New-Item -ItemType Directory -Force -Path $outside | Out-Null
               Push-Location $outside
               try {
+                & $py -c "import Engine,UI; import Engine.goldtrading.main; import UI.dashboard; print('portable project imports outside cwd OK')"
+                if($LASTEXITCODE -ne 0){ throw 'Portable project package imports failed outside project root' }
                 & $py (Join-Path $dest 'Tools\validate_config.py')
                 if($LASTEXITCODE -ne 0){ throw 'Portable validate_config.py failed outside project root' }
                 & $py (Join-Path $dest 'Tools\run_smoke_test.py')
